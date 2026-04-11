@@ -1,0 +1,23 @@
+.env
+.env.local
+.env.*.local
+AGENTS.md
+arrancar-v1.bat
+publish-github.ps1
+ESP 2026 Spring.txt
+/.githooks/
+/docs/
+
+/storage/data/*.sqlite
+/storage/data/sessions/
+/storage/data/runtime/
+/storage/data/tmp/
+/storage/exports/*.csv
+/storage/imports/*.txt
+
+/deploy-hostinger/
+/deploy-hostinger.zip
+
+/.phpunit.result.cache
+Thumbs.db
+*.log
