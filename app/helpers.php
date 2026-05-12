@@ -205,7 +205,7 @@ function render_page_start(string $title, bool $showNav = true): void
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="<?= e(csrf_token()) ?>">
     <title><?= e($pageTitle) ?></title>
-    <link rel="stylesheet" href="<?= e(app_url('assets/app.css')) ?>">
+    <link rel="stylesheet" href="<?= e(app_url('assets/app.css')) ?>?v=<?= filemtime(is_file(__DIR__ . '/../public/assets/app.css') ? __DIR__ . '/../public/assets/app.css' : __DIR__ . '/../public_html/assets/app.css') ?>">
 </head>
 <body>
 <div class="app-shell">
