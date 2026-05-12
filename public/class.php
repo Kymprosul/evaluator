@@ -111,6 +111,6 @@ render_page_start(__('classroom'));
     <button type="button" id="save-attendance-button" class="primary-button"><?= e(__('save_attendance')) ?></button>
 </section>
 
-<?php $classroomJsVersion = is_file(project_path('public/assets/classroom.js')) ? (string) filemtime(project_path('public/assets/classroom.js')) : '1'; ?>
+<?php $classroomJsVersion = is_file(__DIR__ . '/assets/classroom.js') ? (string) filemtime(__DIR__ . '/assets/classroom.js') : '1'; ?>
 <script src="<?= e(app_url('assets/classroom.js?v=' . $classroomJsVersion)) ?>" defer></script>
 <?php render_page_end(); ?>
