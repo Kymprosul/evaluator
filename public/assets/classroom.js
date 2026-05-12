@@ -219,6 +219,11 @@ if (app) {
             return;
         }
 
+        const attendanceDateEl = document.getElementById("attendance-date");
+        if (attendanceDateEl) {
+            attendanceDateEl.textContent = currentAttendanceDate || "";
+        }
+
         attendanceContainer.innerHTML = "";
         const students = attendanceStudents();
 

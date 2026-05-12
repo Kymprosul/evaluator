@@ -106,7 +106,7 @@ render_page_start(__('classroom'));
 </section>
 
 <section class="info-card attendance-board">
-    <h2><?= e(__('attendance')) ?></h2>
+    <h2><?= e(__('attendance')) ?> <span id="attendance-date" class="attendance-date"></span></h2>
     <div id="attendance-students" class="attendance-grid"></div>
     <button type="button" id="save-attendance-button" class="primary-button"><?= e(__('save_attendance')) ?></button>
 </section>

@@ -273,6 +273,13 @@ label { display: grid; gap: 0.5rem; color: var(--muted); }
 	margin-top: 1.2rem;
 }
 
+.attendance-date {
+	font-size: 0.85rem;
+	font-weight: 400;
+	color: var(--muted, #8a7e6d);
+	margin-left: 0.5rem;
+}
+
 .attendance-student-button {
 	border: 0;
 	background: rgba(255, 250, 242, 0.82);
