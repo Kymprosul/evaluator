@@ -42,7 +42,9 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 
 send_security_headers();
 
-Database::migrate();
+if (!str_contains(current_path(), '/api/')) {
+    Database::migrate();
+}
 Auth::bootstrap();
 
 if (isset($_GET['lang'])) {

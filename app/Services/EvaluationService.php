@@ -57,7 +57,7 @@ final class EvaluationService
 
     public function spin(int $classId, int $viewerUserId, bool $isAdmin): array
     {
-        $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
+        $classroom = $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
         $cycle = $this->currentCycle($classId);
         if ($cycle['status'] !== 'open') {
             throw new RuntimeException('La ronda actual ya está completa. Reinicia para empezar otra.');
@@ -101,13 +101,13 @@ final class EvaluationService
         return [
             'message' => 'Alumno seleccionado.',
             'selected' => $this->formatEvaluation($evaluation),
-            'state' => $this->state($classId, $viewerUserId, $isAdmin),
+            'state' => $this->runtimeState($classId, $classroom, $cycle),
         ];
     }
 
     public function evaluate(int $classId, int $evaluationId, string $score, int $userId, bool $isAdmin): array
     {
-        $this->accessibleClassroom($classId, $userId, $isAdmin);
+        $classroom = $this->accessibleClassroom($classId, $userId, $isAdmin);
         if (!in_array($score, ['+', '=', '-'], true)) {
             throw new RuntimeException('La calificación no es válida.');
         }
@@ -135,15 +135,19 @@ final class EvaluationService
             $completedCycle = $this->fetchCycle($cycleId);
             $this->createNextCycle($classId, (int) $completedCycle['cycle_number']);
 
+            $nextCycle = $this->currentCycle($classId);
+
             return [
                 'message' => 'Evaluación guardada. Nueva ronda creada automáticamente.',
-                'state' => $this->state($classId, $userId, $isAdmin),
+                'state' => $this->runtimeState($classId, $classroom, $nextCycle),
             ];
         }
 
+        $activeCycle = $cycleId === null ? $this->currentCycle($classId) : $this->fetchCycle($cycleId);
+
         return [
             'message' => 'Evaluación guardada.',
-            'state' => $this->state($classId, $userId, $isAdmin),
+            'state' => $this->runtimeState($classId, $classroom, $activeCycle),
         ];
     }
 
@@ -345,5 +349,42 @@ final class EvaluationService
         }
 
         return $code;
+    }
+
+    private function runtimeState(int $classId, array $classroom, array $cycle): array
+    {
+        $cycleId = (int) $cycle['id'];
+        $remainingStudents = $this->remainingStudents($classId, $cycleId);
+        $pendingEvaluation = $this->pendingEvaluation($classId, $cycleId);
+        $evaluatedCount = $this->cycleEvaluatedCount($cycleId);
+
+        return [
+            'class' => [
+                'id' => (int) $classroom['id'],
+                'code' => $classroom['code'],
+                'name' => $classroom['name'],
+                'term' => $classroom['term'],
+                'year' => (int) $classroom['year'],
+                'owner_username' => $classroom['owner_username'] ?? null,
+                'students_count' => (int) $classroom['students_count'],
+            ],
+            'cycle' => [
+                'id' => $cycleId,
+                'number' => (int) $cycle['cycle_number'],
+                'status' => $cycle['status'],
+                'started_at' => $cycle['started_at'],
+                'finished_at' => $cycle['finished_at'],
+            ],
+            'remaining_students' => array_map([$this, 'formatStudent'], $remainingStudents),
+            'pending_evaluation' => $pendingEvaluation === null ? null : $this->formatEvaluation($pendingEvaluation),
+            'recent_evaluations' => $this->recentEvaluations($classId),
+            'stats' => [
+                'total_students' => (int) $classroom['students_count'],
+                'remaining_students' => count($remainingStudents),
+                'evaluated_students' => $evaluatedCount,
+                'can_spin' => $cycle['status'] === 'open' && $pendingEvaluation === null && count($remainingStudents) > 0,
+                'can_reset' => (int) $classroom['students_count'] > 0 && $pendingEvaluation === null,
+            ],
+        ];
     }
 }

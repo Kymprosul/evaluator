@@ -23,6 +23,8 @@ if (app) {
     let state = JSON.parse(app.dataset.initialState);
     let rotation = 0;
     let isAnimating = false;
+    let pendingSpinFrame = null;
+    let pendingSpinStart = 0;
     let lastWinnerLabel = state.pending_evaluation?.student?.label || "";
 
     function colorFor(index) {
@@ -236,6 +238,33 @@ if (app) {
         updateWinnerDisplay();
     }
 
+    function startPendingSpin(previousSegments) {
+        isAnimating = true;
+        renderState();
+        pendingSpinStart = performance.now();
+
+        const animate = (now) => {
+            if (!isAnimating || !Array.isArray(previousSegments) || previousSegments.length < 2) {
+                pendingSpinFrame = null;
+                return;
+            }
+
+            const elapsed = now - pendingSpinStart;
+            rotation += 0.015 + Math.min(0.02, elapsed / 16000);
+            drawWheelWithSegments(previousSegments);
+            pendingSpinFrame = requestAnimationFrame(animate);
+        };
+
+        pendingSpinFrame = requestAnimationFrame(animate);
+    }
+
+    function stopPendingSpin() {
+        if (pendingSpinFrame !== null) {
+            cancelAnimationFrame(pendingSpinFrame);
+            pendingSpinFrame = null;
+        }
+    }
+
     async function postJson(url, payload) {
         const response = await fetch(url, {
             method: "POST",
@@ -310,12 +339,17 @@ if (app) {
 
         clearWinnerDisplay();
         const previousSegments = [...currentSegments()];
+        startPendingSpin(previousSegments);
 
         try {
             setFeedback("Girando ruleta...");
             const data = await postJson(spinUrl, { class_id: state.class.id });
+            stopPendingSpin();
             animateToSelected(data.selected.student, previousSegments, data.state);
         } catch (error) {
+            stopPendingSpin();
+            isAnimating = false;
+            renderState();
             setFeedback(error.message, "error");
         }
     }
