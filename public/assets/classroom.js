@@ -14,11 +14,14 @@ if (app) {
     const remainingElement = document.getElementById("stat-remaining");
     const evaluatedElement = document.getElementById("stat-evaluated");
     const evaluationButtons = Array.from(document.querySelectorAll(".eval-button"));
+    const attendanceContainer = document.getElementById("attendance-students");
+    const saveAttendanceButton = document.getElementById("save-attendance-button");
 
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
     const spinUrl = app.dataset.spinUrl;
     const evaluateUrl = app.dataset.evaluateUrl;
     const resetUrl = app.dataset.resetUrl;
+    const attendanceUrl = app.dataset.attendanceUrl;
 
     let state = JSON.parse(app.dataset.initialState);
     let rotation = 0;
@@ -26,6 +29,52 @@ if (app) {
     let pendingSpinFrame = null;
     let pendingSpinStart = 0;
     let lastWinnerLabel = state.pending_evaluation?.student?.label || "";
+    let selectedAttendance = new Set(state.attendance?.present_student_ids || []);
+    let currentAttendanceDate = state.attendance?.date || "";
+    let attendanceAudioContext = null;
+
+    function applyIncomingState(incomingState) {
+        const nextAttendanceDate = incomingState.attendance?.date || "";
+        if (nextAttendanceDate !== currentAttendanceDate) {
+            selectedAttendance = new Set(incomingState.attendance?.present_student_ids || []);
+            currentAttendanceDate = nextAttendanceDate;
+        }
+
+        state = incomingState;
+    }
+
+    function playAttendanceBling() {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) {
+            return;
+        }
+
+        attendanceAudioContext ||= new AudioContextClass();
+        const now = attendanceAudioContext.currentTime;
+        const gain = attendanceAudioContext.createGain();
+        const firstTone = attendanceAudioContext.createOscillator();
+        const secondTone = attendanceAudioContext.createOscillator();
+
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.055, now + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
+
+        firstTone.type = "sine";
+        firstTone.frequency.setValueAtTime(740, now);
+        firstTone.frequency.exponentialRampToValueAtTime(980, now + 0.18);
+
+        secondTone.type = "triangle";
+        secondTone.frequency.setValueAtTime(1480, now + 0.035);
+
+        firstTone.connect(gain);
+        secondTone.connect(gain);
+        gain.connect(attendanceAudioContext.destination);
+
+        firstTone.start(now);
+        secondTone.start(now + 0.035);
+        firstTone.stop(now + 0.22);
+        secondTone.stop(now + 0.18);
+    }
 
     function colorFor(index) {
         const palette = [
@@ -161,6 +210,61 @@ if (app) {
         });
     }
 
+    function attendanceStudents() {
+        return Array.isArray(state.attendance?.students) ? state.attendance.students : [];
+    }
+
+    function renderAttendance() {
+        if (!attendanceContainer) {
+            return;
+        }
+
+        attendanceContainer.innerHTML = "";
+        const students = attendanceStudents();
+
+        if (!students.length) {
+            const empty = document.createElement("p");
+            empty.className = "muted";
+            empty.textContent = "No hay alumnos en esta clase.";
+            attendanceContainer.appendChild(empty);
+            if (saveAttendanceButton) {
+                saveAttendanceButton.disabled = true;
+            }
+            return;
+        }
+
+        students.forEach((student) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "attendance-student-button";
+            button.textContent = student.label;
+            button.dataset.studentId = String(student.id);
+
+            if (selectedAttendance.has(Number(student.id))) {
+                button.classList.add("is-present");
+            }
+
+            button.addEventListener("click", () => {
+                const studentId = Number(student.id);
+                if (selectedAttendance.has(studentId)) {
+                    selectedAttendance.delete(studentId);
+                    button.classList.remove("is-present");
+                    return;
+                }
+
+                selectedAttendance.add(studentId);
+                button.classList.add("is-present");
+                playAttendanceBling();
+            });
+
+            attendanceContainer.appendChild(button);
+        });
+
+        if (saveAttendanceButton) {
+            saveAttendanceButton.disabled = false;
+        }
+    }
+
     function renderState() {
         totalElement.textContent = String(state.stats.total_students);
         remainingElement.textContent = String(state.stats.remaining_students);
@@ -183,6 +287,7 @@ if (app) {
         updateWinnerDisplay();
 
         renderRecentEvaluations();
+        renderAttendance();
         drawWheel();
     }
 
@@ -285,7 +390,7 @@ if (app) {
 
     function animateToSelected(selectedStudent, previousSegments, incomingState) {
         const index = previousSegments.findIndex((student) => Number(student.id) === Number(selectedStudent.id));
-        state = incomingState;
+        applyIncomingState(incomingState);
 
         if (index === -1) {
             renderState();
@@ -366,7 +471,7 @@ if (app) {
                 score,
             });
 
-            state = data.state;
+            applyIncomingState(data.state);
             renderState();
             setFeedback(`Evaluación guardada con "${score}".`, "success");
         } catch (error) {
@@ -388,12 +493,54 @@ if (app) {
 
         try {
             const data = await postJson(resetUrl, { class_id: state.class.id });
-            state = data.state;
+            applyIncomingState(data.state);
             rotation = 0;
             renderState();
             setFeedback(data.message, "success");
         } catch (error) {
             setFeedback(error.message, "error");
+        }
+    }
+
+    async function handleSaveAttendance() {
+        if (!saveAttendanceButton) {
+            return;
+        }
+
+        saveAttendanceButton.disabled = true;
+
+        try {
+            const payload = new URLSearchParams();
+            payload.append("class_id", String(state.class.id));
+            payload.append("attendance_date", String(state.attendance?.date || ""));
+            Array.from(selectedAttendance).forEach((studentId) => {
+                payload.append("present_student_ids[]", String(studentId));
+            });
+
+            const response = await fetch(attendanceUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-CSRF-Token": csrfToken,
+                },
+                body: payload,
+            });
+
+            const result = await response.json();
+            if (!response.ok || !result.ok) {
+                throw new Error(result.message || "No se pudo guardar la asistencia.");
+            }
+
+            const data = result.data;
+            applyIncomingState(data.state);
+            selectedAttendance = new Set(state.attendance?.present_student_ids || []);
+            currentAttendanceDate = state.attendance?.date || "";
+            renderState();
+            setFeedback(data.message || "Asistencia guardada.", data.date_changed ? "info" : "success");
+        } catch (error) {
+            setFeedback(error.message, "error");
+        } finally {
+            saveAttendanceButton.disabled = false;
         }
     }
 
@@ -412,6 +559,10 @@ if (app) {
     evaluationButtons.forEach((button) => {
         button.addEventListener("click", () => handleEvaluation(button.dataset.score));
     });
+
+    if (saveAttendanceButton) {
+        saveAttendanceButton.addEventListener("click", handleSaveAttendance);
+    }
 
     window.addEventListener("resize", () => {
         drawWheel();

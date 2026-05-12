@@ -12,6 +12,11 @@ $currentUserId = (int) App\Auth::id();
 $isAdmin = App\Auth::isAdmin();
 $classes = $repository->allWithStats($currentUserId, $isAdmin);
 $selectedClassId = (int) (post_value('class_id') ?: get_value('class_id', $classes[0]['id'] ?? 0));
+$selectedReportType = (string) (post_value('report_type') ?: get_value('report_type', 'exercises'));
+
+if (!in_array($selectedReportType, ['exercises', 'attendance'], true)) {
+    $selectedReportType = 'exercises';
+}
 
 if (is_post()) {
     verify_csrf();
@@ -19,10 +24,10 @@ if (is_post()) {
     try {
         $action = (string) post_value('action', '');
 
-        if ($action === 'update_score') {
+        if ($selectedReportType === 'exercises' && $action === 'update_score') {
             $reportService->updateScore((int) post_value('evaluation_id', 0), (string) post_value('score', ''), $currentUserId, $isAdmin);
             flash('success', 'Nota actualizada manualmente.');
-        } elseif ($action === 'save_bulk') {
+        } elseif ($selectedReportType === 'exercises' && $action === 'save_bulk') {
             $scores = post_value('scores', []);
 
             if (!is_array($scores)) {
@@ -47,7 +52,7 @@ if (is_post()) {
             }
 
             flash('success', 'Cambios guardados.');
-        } elseif ($action === 'save_cell') {
+        } elseif ($selectedReportType === 'exercises' && $action === 'save_cell') {
             $reportService->upsertScoreByCycle(
                 $selectedClassId,
                 (int) post_value('student_id', 0),
@@ -57,10 +62,10 @@ if (is_post()) {
                 $isAdmin
             );
             flash('success', 'Nota guardada.');
-        } elseif ($action === 'add_cycle') {
+        } elseif ($selectedReportType === 'exercises' && $action === 'add_cycle') {
             $reportService->addCycleColumn($selectedClassId, $currentUserId, $isAdmin);
             flash('success', 'Columna añadida.');
-        } elseif ($action === 'delete_cycle') {
+        } elseif ($selectedReportType === 'exercises' && $action === 'delete_cycle') {
             $reportService->deleteCycleColumn($selectedClassId, (int) post_value('cycle_number', 0), $currentUserId, $isAdmin);
             flash('success', 'Columna eliminada.');
         }
@@ -68,30 +73,42 @@ if (is_post()) {
         flash('error', $exception instanceof RuntimeException ? $exception->getMessage() : 'No se pudo actualizar la nota.');
     }
 
-    redirect_to(app_url('reports.php?class_id=' . $selectedClassId));
+    redirect_to(app_url('reports.php?class_id=' . $selectedClassId . '&report_type=' . urlencode($selectedReportType)));
 }
 
 if ((string) get_value('export', '') !== '' && $selectedClassId > 0) {
-    $matrix = $reportService->reportMatrix($selectedClassId, $currentUserId, $isAdmin);
+    $matrix = $selectedReportType === 'attendance'
+        ? $reportService->attendanceReportMatrix($selectedClassId, $currentUserId, $isAdmin)
+        : $reportService->reportMatrix($selectedClassId, $currentUserId, $isAdmin);
     $safeFileName = preg_replace('/[^A-Za-z0-9._-]/', '_', $matrix['class_label']) ?: 'report';
     $exportMode = (string) get_value('export', '');
+    $fileSuffix = $selectedReportType === 'attendance' ? '_attendance' : '_exercises';
 
     if ($exportMode === 'csv') {
         header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename="' . $safeFileName . '.csv"');
-        echo $reportService->exportCsv($selectedClassId, $currentUserId, $isAdmin);
+        header('Content-Disposition: attachment; filename="' . $safeFileName . $fileSuffix . '.csv"');
+        echo $selectedReportType === 'attendance'
+            ? $reportService->exportAttendanceCsv($selectedClassId, $currentUserId, $isAdmin)
+            : $reportService->exportCsv($selectedClassId, $currentUserId, $isAdmin);
         exit;
     }
 
     if ($exportMode === 'xls') {
         header('Content-Type: application/vnd.ms-excel; charset=utf-8');
-        header('Content-Disposition: attachment; filename="' . $safeFileName . '.xls"');
-        echo $reportService->exportExcel($selectedClassId, $currentUserId, $isAdmin);
+        header('Content-Disposition: attachment; filename="' . $safeFileName . $fileSuffix . '.xls"');
+        echo $selectedReportType === 'attendance'
+            ? $reportService->exportAttendanceExcel($selectedClassId, $currentUserId, $isAdmin)
+            : $reportService->exportExcel($selectedClassId, $currentUserId, $isAdmin);
         exit;
     }
 }
 
-$matrix = $selectedClassId > 0 ? $reportService->reportMatrix($selectedClassId, $currentUserId, $isAdmin) : null;
+$matrix = null;
+if ($selectedClassId > 0) {
+    $matrix = $selectedReportType === 'attendance'
+        ? $reportService->attendanceReportMatrix($selectedClassId, $currentUserId, $isAdmin)
+        : $reportService->reportMatrix($selectedClassId, $currentUserId, $isAdmin);
+}
 
 render_page_start(__('reports'));
 ?>
@@ -121,31 +138,46 @@ render_page_start(__('reports'));
                 <?php endforeach; ?>
             </select>
         </label>
+            <label>
+                <span><?= e(__('report_type')) ?></span>
+                <select name="report_type" required>
+                    <option value="exercises" <?= $selectedReportType === 'exercises' ? 'selected' : '' ?>><?= e(__('report_type_exercises')) ?></option>
+                    <option value="attendance" <?= $selectedReportType === 'attendance' ? 'selected' : '' ?>><?= e(__('report_type_attendance')) ?></option>
+                </select>
+            </label>
             <button type="submit" class="primary-button"><?= e(__('run_report')) ?></button>
         </form>
 
         <?php if ($matrix !== null): ?>
             <div class="button-row report-actions">
-                <form method="post" class="inline-form">
-                    <?= csrf_field() ?>
-                    <input type="hidden" name="action" value="add_cycle">
-                    <input type="hidden" name="class_id" value="<?= e((string) $selectedClassId) ?>">
-                    <button type="submit" class="secondary-button"><?= e(__('add_column')) ?></button>
-                </form>
-                <a class="secondary-button" href="<?= e(app_url('reports.php?class_id=' . $selectedClassId . '&export=csv')) ?>"><?= e(__('export')) ?> CSV</a>
-                <a class="secondary-button" href="<?= e(app_url('reports.php?class_id=' . $selectedClassId . '&export=xls')) ?>"><?= e(__('export')) ?> Excel</a>
-                <form method="post" class="inline-form" id="bulk-report-form">
-                    <?= csrf_field() ?>
-                    <input type="hidden" name="action" value="save_bulk">
-                    <input type="hidden" name="class_id" value="<?= e((string) $selectedClassId) ?>">
-                    <button type="submit" class="primary-button"><?= e(__('save')) ?> cambios</button>
-                </form>
+                <?php if ($selectedReportType === 'exercises'): ?>
+                    <form method="post" class="inline-form">
+                        <?= csrf_field() ?>
+                        <input type="hidden" name="action" value="add_cycle">
+                        <input type="hidden" name="class_id" value="<?= e((string) $selectedClassId) ?>">
+                        <input type="hidden" name="report_type" value="<?= e($selectedReportType) ?>">
+                        <button type="submit" class="secondary-button"><?= e(__('add_column')) ?></button>
+                    </form>
+                <?php endif; ?>
+                <a class="secondary-button" href="<?= e(app_url('reports.php?class_id=' . $selectedClassId . '&report_type=' . urlencode($selectedReportType) . '&export=csv')) ?>"><?= e(__('export')) ?> CSV</a>
+                <a class="secondary-button" href="<?= e(app_url('reports.php?class_id=' . $selectedClassId . '&report_type=' . urlencode($selectedReportType) . '&export=xls')) ?>"><?= e(__('export')) ?> Excel</a>
+                <?php if ($selectedReportType === 'exercises'): ?>
+                    <form method="post" class="inline-form" id="bulk-report-form">
+                        <?= csrf_field() ?>
+                        <input type="hidden" name="action" value="save_bulk">
+                        <input type="hidden" name="class_id" value="<?= e((string) $selectedClassId) ?>">
+                        <input type="hidden" name="report_type" value="<?= e($selectedReportType) ?>">
+                        <button type="submit" class="primary-button"><?= e(__('save')) ?> cambios</button>
+                    </form>
+                <?php endif; ?>
             </div>
         <?php endif; ?>
     <?php endif; ?>
 
-    <?php if ($classes !== [] && $matrix !== null && $matrix['cycles'] === []): ?>
-        <p class="muted">Esta clase todavía no tiene ciclos evaluados.</p>
+    <?php if ($classes !== [] && $matrix !== null && $selectedReportType === 'exercises' && $matrix['cycles'] === []): ?>
+        <p class="muted"><?= e(__('no_cycles')) ?></p>
+    <?php elseif ($classes !== [] && $matrix !== null && $selectedReportType === 'attendance' && $matrix['dates'] === []): ?>
+        <p class="muted"><?= e(__('no_attendance')) ?></p>
     <?php elseif ($classes !== [] && $matrix !== null): ?>
         <div class="report-title-row">
             <h2><?= e($matrix['class_label']) ?></h2>
@@ -157,51 +189,75 @@ render_page_start(__('reports'));
         <div class="table-wrap">
             <table class="data-table matrix-table">
                 <thead>
-                    <tr>
-                        <th><?= e(__('student')) ?></th>
-                        <?php foreach ($matrix['cycles'] as $cycleNumber): ?>
-                            <th>
-                                <div class="cycle-header">
-                                    <span><?= e(__('score')) ?> <?= e((string) $cycleNumber) ?></span>
-                                    <form method="post" onsubmit="return confirm('<?= e(__('confirm_delete_cycle')) ?>');">
-                                        <?= csrf_field() ?>
-                                        <input type="hidden" name="action" value="delete_cycle">
-                                        <input type="hidden" name="class_id" value="<?= e((string) $selectedClassId) ?>">
-                                        <input type="hidden" name="cycle_number" value="<?= e((string) $cycleNumber) ?>">
-                                        <button type="submit" class="ghost-link danger-link"><?= e(__('delete')) ?></button>
-                                    </form>
-                                </div>
-                            </th>
-                        <?php endforeach; ?>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($matrix['rows'] as $row): ?>
+                    <?php if ($selectedReportType === 'exercises'): ?>
                         <tr>
-                            <td><?= e($row['student_label']) ?></td>
+                            <th><?= e(__('student')) ?></th>
                             <?php foreach ($matrix['cycles'] as $cycleNumber): ?>
-                                <td>
-                                    <?php $cell = $row['cycles'][$cycleNumber] ?? null; ?>
-                                    <select
-                                        name="scores[<?= e((string) $row['student_id']) ?>][<?= e((string) $cycleNumber) ?>]"
-                                        class="compact-input"
-                                        form="bulk-report-form"
-                                    >
-                                        <option value="" <?= $cell === null ? 'selected' : '' ?>>NA</option>
-                                        <?php foreach (['+', '=', '-'] as $scoreOption): ?>
-                                            <option value="<?= e($scoreOption) ?>" <?= ($cell['score'] ?? '') === $scoreOption ? 'selected' : '' ?>><?= e($scoreOption) ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </td>
+                                <th>
+                                    <div class="cycle-header">
+                                        <span><?= e(__('score')) ?> <?= e((string) $cycleNumber) ?></span>
+                                        <form method="post" onsubmit="return confirm('<?= e(__('confirm_delete_cycle')) ?>');">
+                                            <?= csrf_field() ?>
+                                            <input type="hidden" name="action" value="delete_cycle">
+                                            <input type="hidden" name="class_id" value="<?= e((string) $selectedClassId) ?>">
+                                            <input type="hidden" name="cycle_number" value="<?= e((string) $cycleNumber) ?>">
+                                            <input type="hidden" name="report_type" value="<?= e($selectedReportType) ?>">
+                                            <button type="submit" class="ghost-link danger-link"><?= e(__('delete')) ?></button>
+                                        </form>
+                                    </div>
+                                </th>
                             <?php endforeach; ?>
                         </tr>
-                    <?php endforeach; ?>
+                    <?php else: ?>
+                        <tr>
+                            <th><?= e(__('student')) ?></th>
+                            <?php foreach ($matrix['dates'] as $attendanceDate): ?>
+                                <th>Asistencia <?= e($attendanceDate) ?></th>
+                            <?php endforeach; ?>
+                        </tr>
+                    <?php endif; ?>
+                </thead>
+                <tbody>
+                    <?php if ($selectedReportType === 'exercises'): ?>
+                        <?php foreach ($matrix['rows'] as $row): ?>
+                            <tr>
+                                <td><?= e($row['student_label']) ?></td>
+                                <?php foreach ($matrix['cycles'] as $cycleNumber): ?>
+                                    <td>
+                                        <?php $cell = $row['cycles'][$cycleNumber] ?? null; ?>
+                                        <select
+                                            name="scores[<?= e((string) $row['student_id']) ?>][<?= e((string) $cycleNumber) ?>]"
+                                            class="compact-input"
+                                            form="bulk-report-form"
+                                        >
+                                            <option value="" <?= $cell === null ? 'selected' : '' ?>>NA</option>
+                                            <?php foreach (['+', '=', '-'] as $scoreOption): ?>
+                                                <option value="<?= e($scoreOption) ?>" <?= ($cell['score'] ?? '') === $scoreOption ? 'selected' : '' ?>><?= e($scoreOption) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </td>
+                                <?php endforeach; ?>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <?php foreach ($matrix['rows'] as $row): ?>
+                            <tr>
+                                <td><?= e($row['student_label']) ?></td>
+                                <?php foreach ($matrix['dates'] as $attendanceDate): ?>
+                                    <?php $attendanceCell = $row['dates'][$attendanceDate] ?? ['label' => '0']; ?>
+                                    <td><?= e((string) $attendanceCell['label']) ?></td>
+                                <?php endforeach; ?>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </tbody>
             </table>
         </div>
-        <div class="button-row report-actions">
-            <button type="submit" class="primary-button" form="bulk-report-form"><?= e(__('save')) ?> cambios</button>
-        </div>
+        <?php if ($selectedReportType === 'exercises'): ?>
+            <div class="button-row report-actions">
+                <button type="submit" class="primary-button" form="bulk-report-form"><?= e(__('save')) ?> cambios</button>
+            </div>
+        <?php endif; ?>
     <?php endif; ?>
 </section>
 <?php render_page_end(); ?>

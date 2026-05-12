@@ -8,6 +8,7 @@ use App\Database;
 use App\Repositories\ClassRepository;
 use PDO;
 use RuntimeException;
+use Throwable;
 
 final class EvaluationService
 {
@@ -45,12 +46,80 @@ final class EvaluationService
             'remaining_students' => array_map([$this, 'formatStudent'], $remainingStudents),
             'pending_evaluation' => $pendingEvaluation === null ? null : $this->formatEvaluation($pendingEvaluation),
             'recent_evaluations' => $this->recentEvaluations($classId),
+            'attendance' => $this->attendanceState($classId),
             'stats' => [
                 'total_students' => (int) $classroom['students_count'],
                 'remaining_students' => count($remainingStudents),
                 'evaluated_students' => $evaluatedCount,
                 'can_spin' => $cycle['status'] === 'open' && $pendingEvaluation === null && count($remainingStudents) > 0,
                 'can_reset' => (int) $classroom['students_count'] > 0 && $pendingEvaluation === null,
+            ],
+        ];
+    }
+
+    public function saveAttendance(int $classId, array $presentStudentIds, ?string $clientAttendanceDate, int $userId, bool $isAdmin): array
+    {
+        $classroom = $this->accessibleClassroom($classId, $userId, $isAdmin);
+        $attendanceDate = date('Y-m-d');
+        $students = $this->classes->studentsForClass($classId);
+        $allowedStudentIds = array_map(static fn(array $student): int => (int) $student['id'], $students);
+
+        if ($clientAttendanceDate !== null && $clientAttendanceDate !== '' && $clientAttendanceDate !== $attendanceDate) {
+            return [
+                'message' => 'Ha cambiado el día. Se ha reiniciado el tablero de asistencia.',
+                'state' => $this->state($classId, $userId, $isAdmin),
+                'date_changed' => true,
+                'class' => [
+                    'id' => (int) $classroom['id'],
+                ],
+            ];
+        }
+
+        $normalized = array_values(array_unique(array_map(static fn(mixed $id): int => (int) $id, $presentStudentIds)));
+        $filtered = array_values(array_filter(
+            $normalized,
+            static fn(int $id): bool => in_array($id, $allowedStudentIds, true)
+        ));
+
+        $pdo = Database::connection();
+        $pdo->beginTransaction();
+
+        try {
+            $delete = $pdo->prepare(
+                'DELETE FROM attendance_records WHERE class_id = :class_id AND attendance_date = :attendance_date'
+            );
+            $delete->execute([
+                'class_id' => $classId,
+                'attendance_date' => $attendanceDate,
+            ]);
+
+            $insert = $pdo->prepare(
+                'INSERT INTO attendance_records (class_id, student_id, attendance_date, attendance_score, marked_by, marked_at)
+                 VALUES (:class_id, :student_id, :attendance_date, :attendance_score, :marked_by, :marked_at)'
+            );
+
+            foreach ($allowedStudentIds as $studentId) {
+                $insert->execute([
+                    'class_id' => $classId,
+                    'student_id' => $studentId,
+                    'attendance_date' => $attendanceDate,
+                    'attendance_score' => in_array($studentId, $filtered, true) ? 2 : 0,
+                    'marked_by' => $userId,
+                    'marked_at' => date('Y-m-d H:i:s'),
+                ]);
+            }
+
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            $pdo->rollBack();
+            throw $exception;
+        }
+
+        return [
+            'message' => 'Asistencia guardada.',
+            'state' => $this->state($classId, $userId, $isAdmin),
+            'class' => [
+                'id' => (int) $classroom['id'],
             ],
         ];
     }
@@ -378,6 +447,7 @@ final class EvaluationService
             'remaining_students' => array_map([$this, 'formatStudent'], $remainingStudents),
             'pending_evaluation' => $pendingEvaluation === null ? null : $this->formatEvaluation($pendingEvaluation),
             'recent_evaluations' => $this->recentEvaluations($classId),
+            'attendance' => $this->attendanceState($classId),
             'stats' => [
                 'total_students' => (int) $classroom['students_count'],
                 'remaining_students' => count($remainingStudents),
@@ -386,5 +456,34 @@ final class EvaluationService
                 'can_reset' => (int) $classroom['students_count'] > 0 && $pendingEvaluation === null,
             ],
         ];
+    }
+
+    private function attendanceState(int $classId): array
+    {
+        $attendanceDate = date('Y-m-d');
+        $students = $this->classes->studentsForClass($classId);
+
+        return [
+            'date' => $attendanceDate,
+            'students' => array_map([$this, 'formatStudent'], $students),
+            'present_student_ids' => $this->presentStudentIdsByDate($classId, $attendanceDate),
+        ];
+    }
+
+    private function presentStudentIdsByDate(int $classId, string $attendanceDate): array
+    {
+        $statement = Database::connection()->prepare(
+            'SELECT student_id
+             FROM attendance_records
+             WHERE class_id = :class_id
+               AND attendance_date = :attendance_date
+               AND attendance_score = 2'
+        );
+        $statement->execute([
+            'class_id' => $classId,
+            'attendance_date' => $attendanceDate,
+        ]);
+
+        return array_map(static fn(mixed $id): int => (int) $id, $statement->fetchAll(PDO::FETCH_COLUMN));
     }
 }

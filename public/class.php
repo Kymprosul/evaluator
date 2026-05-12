@@ -49,6 +49,7 @@ render_page_start(__('classroom'));
     data-spin-url="<?= e(app_url('api/spin.php')) ?>"
     data-evaluate-url="<?= e(app_url('api/evaluate.php')) ?>"
     data-reset-url="<?= e(app_url('api/reset-cycle.php')) ?>"
+    data-attendance-url="<?= e(app_url('api/attendance.php')) ?>"
 >
     <div class="roulette-panel">
         <div id="roulette-container" class="roulette-wrap">
@@ -100,7 +101,14 @@ render_page_start(__('classroom'));
                 <?php endforeach; ?>
             </ul>
         </div>
+
     </aside>
+</section>
+
+<section class="info-card attendance-board">
+    <h2><?= e(__('attendance')) ?></h2>
+    <div id="attendance-students" class="attendance-grid"></div>
+    <button type="button" id="save-attendance-button" class="primary-button"><?= e(__('save_attendance')) ?></button>
 </section>
 
 <?php $classroomJsVersion = is_file(project_path('public/assets/classroom.js')) ? (string) filemtime(project_path('public/assets/classroom.js')) : '1'; ?>

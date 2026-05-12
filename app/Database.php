@@ -140,6 +140,19 @@ final class Database
                 FOREIGN KEY(cycle_id) REFERENCES evaluation_cycles(id) ON DELETE CASCADE,
                 FOREIGN KEY(evaluated_by) REFERENCES users(id) ON DELETE SET NULL
             )',
+            'CREATE TABLE IF NOT EXISTS attendance_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                class_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                attendance_date TEXT NOT NULL,
+                attendance_score INTEGER NOT NULL DEFAULT 0,
+                marked_by INTEGER NULL,
+                marked_at TEXT NOT NULL,
+                UNIQUE(class_id, student_id, attendance_date),
+                FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY(marked_by) REFERENCES users(id) ON DELETE SET NULL
+            )',
             'CREATE TABLE IF NOT EXISTS imports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 class_id INTEGER NOT NULL,
@@ -221,6 +234,19 @@ final class Database
                 CONSTRAINT fk_evaluations_cycle FOREIGN KEY (cycle_id) REFERENCES evaluation_cycles(id) ON DELETE CASCADE,
                 CONSTRAINT fk_evaluations_user FOREIGN KEY (evaluated_by) REFERENCES users(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
+            'CREATE TABLE IF NOT EXISTS attendance_records (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                class_id INT UNSIGNED NOT NULL,
+                student_id INT UNSIGNED NOT NULL,
+                attendance_date DATE NOT NULL,
+                attendance_score TINYINT NOT NULL DEFAULT 0,
+                marked_by INT UNSIGNED NULL,
+                marked_at DATETIME NOT NULL,
+                UNIQUE KEY uniq_attendance_day (class_id, student_id, attendance_date),
+                CONSTRAINT fk_attendance_class FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                CONSTRAINT fk_attendance_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                CONSTRAINT fk_attendance_marked_by FOREIGN KEY (marked_by) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
             'CREATE TABLE IF NOT EXISTS imports (
                 id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 class_id INT UNSIGNED NOT NULL,
@@ -258,6 +284,30 @@ final class Database
                     : 'ALTER TABLE classes ADD COLUMN owner_user_id INTEGER NULL'
             );
         }
+
+        if (self::tableExists($pdo, 'attendance_records', $driver) && !self::columnExists($pdo, 'attendance_records', 'attendance_score', $driver)) {
+            $pdo->exec(
+                $driver === 'mysql'
+                    ? 'ALTER TABLE attendance_records ADD COLUMN attendance_score TINYINT NOT NULL DEFAULT 0'
+                    : 'ALTER TABLE attendance_records ADD COLUMN attendance_score INTEGER NOT NULL DEFAULT 0'
+            );
+
+            if (self::columnExists($pdo, 'attendance_records', 'is_present', $driver)) {
+                $pdo->exec('UPDATE attendance_records SET attendance_score = CASE WHEN is_present > 0 THEN 2 ELSE 0 END');
+            }
+        }
+    }
+
+    private static function tableExists(PDO $pdo, string $table, string $driver): bool
+    {
+        if ($driver === 'mysql') {
+            $statement = $pdo->query('SHOW TABLES LIKE ' . $pdo->quote($table));
+            return $statement !== false && $statement->fetch(PDO::FETCH_NUM) !== false;
+        }
+
+        $statement = $pdo->prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = :table LIMIT 1");
+        $statement->execute(['table' => $table]);
+        return $statement->fetchColumn() !== false;
     }
 
     private static function backfillAdminUser(PDO $pdo): void

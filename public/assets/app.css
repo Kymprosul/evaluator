@@ -263,6 +263,39 @@ label { display: grid; gap: 0.5rem; color: var(--muted); }
 
 .recent-list li:hover { background: rgba(47, 38, 25, 0.02); }
 
+.attendance-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+	gap: 0.6rem;
+}
+
+.attendance-board {
+	margin-top: 1.2rem;
+}
+
+.attendance-student-button {
+	border: 1px solid var(--line);
+	background: rgba(255, 250, 242, 0.82);
+	color: var(--text);
+	border-radius: 12px;
+	padding: 0.6rem 0.7rem;
+	text-align: left;
+	font-weight: 600;
+	font-size: 0.92rem;
+	line-height: 1.2;
+}
+
+.attendance-student-button:hover {
+	background: rgba(22, 93, 74, 0.12);
+	border-color: rgba(22, 93, 74, 0.3);
+}
+
+.attendance-student-button.is-present {
+	background: rgba(22, 93, 74, 0.22);
+	border-color: rgba(22, 93, 74, 0.6);
+	color: #0f4738;
+}
+
 .report-actions { margin: 1rem 0; flex-wrap: wrap; }
 
 .table-wrap { overflow-x: auto; }

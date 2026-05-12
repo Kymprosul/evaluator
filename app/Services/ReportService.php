@@ -158,6 +158,114 @@ final class ReportService
         return $html;
     }
 
+    public function attendanceReportMatrix(int $classId, int $viewerUserId, bool $isAdmin): array
+    {
+        $classroom = $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
+        $students = $this->classes->studentsForClass($classId);
+
+        $datesStatement = Database::connection()->prepare(
+            'SELECT DISTINCT attendance_date
+             FROM attendance_records
+             WHERE class_id = :class_id
+             ORDER BY attendance_date ASC'
+        );
+        $datesStatement->execute(['class_id' => $classId]);
+        $dates = array_values(array_filter(array_map(
+            static fn(mixed $value): string => (string) $value,
+            $datesStatement->fetchAll(PDO::FETCH_COLUMN)
+        )));
+
+        $recordsStatement = Database::connection()->prepare(
+            'SELECT student_id, attendance_date, attendance_score
+             FROM attendance_records
+             WHERE class_id = :class_id'
+        );
+        $recordsStatement->execute(['class_id' => $classId]);
+        $records = $recordsStatement->fetchAll(PDO::FETCH_ASSOC);
+
+        $cells = [];
+        foreach ($records as $record) {
+            $cells[(int) $record['student_id']][(string) $record['attendance_date']] = (int) $record['attendance_score'];
+        }
+
+        $rows = [];
+        foreach ($students as $student) {
+            $row = [
+                'student_id' => (int) $student['id'],
+                'student_label' => trim((string) ($student['display_name'] ?: $student['student_code'])),
+                'dates' => [],
+            ];
+
+            foreach ($dates as $date) {
+                $score = $cells[(int) $student['id']][$date] ?? 0;
+                $row['dates'][$date] = [
+                    'attendance_score' => $score,
+                    'label' => (string) $score,
+                ];
+            }
+
+            $rows[] = $row;
+        }
+
+        return [
+            'class' => $classroom,
+            'class_label' => $this->classes->label($classroom),
+            'dates' => $dates,
+            'rows' => $rows,
+        ];
+    }
+
+    public function exportAttendanceCsv(int $classId, int $viewerUserId, bool $isAdmin): string
+    {
+        $matrix = $this->attendanceReportMatrix($classId, $viewerUserId, $isAdmin);
+        $handle = fopen('php://temp', 'r+');
+        $headers = array_merge(['Estudiante'], array_map(static fn(string $date): string => 'Asistencia ' . $date, $matrix['dates']));
+
+        fputcsv($handle, [$matrix['class_label'] . ' - Asistencia']);
+        fputcsv($handle, $headers);
+
+        foreach ($matrix['rows'] as $row) {
+            $line = [$row['student_label']];
+            foreach ($matrix['dates'] as $date) {
+                $line[] = $row['dates'][$date]['label'] ?? '0';
+            }
+            fputcsv($handle, $line);
+        }
+
+        rewind($handle);
+        $csv = stream_get_contents($handle);
+        fclose($handle);
+
+        return $csv === false ? '' : $csv;
+    }
+
+    public function exportAttendanceExcel(int $classId, int $viewerUserId, bool $isAdmin): string
+    {
+        $matrix = $this->attendanceReportMatrix($classId, $viewerUserId, $isAdmin);
+
+        $html = '<table border="1">';
+        $colspan = max(1, count($matrix['dates']) + 1);
+        $html .= '<tr><th colspan="' . $colspan . '">' . htmlspecialchars($matrix['class_label'] . ' - Asistencia', ENT_QUOTES, 'UTF-8') . '</th></tr>';
+        $html .= '<tr><th>Estudiante</th>';
+        foreach ($matrix['dates'] as $date) {
+            $html .= '<th>Asistencia ' . htmlspecialchars($date, ENT_QUOTES, 'UTF-8') . '</th>';
+        }
+        $html .= '</tr>';
+
+        foreach ($matrix['rows'] as $row) {
+            $html .= '<tr>';
+            $html .= '<td>' . htmlspecialchars((string) $row['student_label'], ENT_QUOTES, 'UTF-8') . '</td>';
+            foreach ($matrix['dates'] as $date) {
+                $html .= '<td>' . htmlspecialchars((string) ($row['dates'][$date]['label'] ?? '0'), ENT_QUOTES, 'UTF-8') . '</td>';
+            }
+            $html .= '</tr>';
+        }
+
+        $html .= '</table>';
+
+        return $html;
+    }
+
     public function updateScore(int $evaluationId, string $score, int $userId, bool $isAdmin): void
     {
         if ($evaluationId <= 0) {
