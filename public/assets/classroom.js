@@ -43,7 +43,7 @@ if (app) {
         state = incomingState;
     }
 
-    function playAttendanceBling() {
+    function playAttendanceBling(isSelecting = true) {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         if (!AudioContextClass) {
             return;
@@ -56,15 +56,15 @@ if (app) {
         const secondTone = attendanceAudioContext.createOscillator();
 
         gain.gain.setValueAtTime(0.0001, now);
-        gain.gain.exponentialRampToValueAtTime(0.055, now + 0.015);
+        gain.gain.exponentialRampToValueAtTime(isSelecting ? 0.055 : 0.035, now + 0.015);
         gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
 
         firstTone.type = "sine";
-        firstTone.frequency.setValueAtTime(740, now);
-        firstTone.frequency.exponentialRampToValueAtTime(980, now + 0.18);
+        firstTone.frequency.setValueAtTime(isSelecting ? 740 : 520, now);
+        firstTone.frequency.exponentialRampToValueAtTime(isSelecting ? 980 : 390, now + 0.18);
 
         secondTone.type = "triangle";
-        secondTone.frequency.setValueAtTime(1480, now + 0.035);
+        secondTone.frequency.setValueAtTime(isSelecting ? 1480 : 780, now + 0.035);
 
         firstTone.connect(gain);
         secondTone.connect(gain);
@@ -249,12 +249,13 @@ if (app) {
                 if (selectedAttendance.has(studentId)) {
                     selectedAttendance.delete(studentId);
                     button.classList.remove("is-present");
+                    playAttendanceBling(false);
                     return;
                 }
 
                 selectedAttendance.add(studentId);
                 button.classList.add("is-present");
-                playAttendanceBling();
+                playAttendanceBling(true);
             });
 
             attendanceContainer.appendChild(button);
