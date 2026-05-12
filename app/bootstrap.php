@@ -42,7 +42,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 
 send_security_headers();
 
-if (!str_contains(current_path(), '/api/')) {
+if (!str_contains(current_path(), '/api/') && (bool) env_value('AUTO_MIGRATE', true)) {
     Database::migrate();
 }
 Auth::bootstrap();
