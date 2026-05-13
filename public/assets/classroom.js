@@ -15,7 +15,6 @@ if (app) {
     const evaluatedElement = document.getElementById("stat-evaluated");
     const evaluationButtons = Array.from(document.querySelectorAll(".eval-button"));
     const attendanceContainer = document.getElementById("attendance-students");
-    const saveAttendanceButton = document.getElementById("save-attendance-button");
 
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
     const spinUrl = app.dataset.spinUrl;
@@ -32,6 +31,256 @@ if (app) {
     let selectedAttendance = new Set(state.attendance?.present_student_ids || []);
     let currentAttendanceDate = state.attendance?.date || "";
     let attendanceAudioContext = null;
+
+    // ============================================================
+    // AttendanceSync module — auto-save attendance with offline support
+    // ============================================================
+    const AttendanceSync = (function () {
+        const MAX_RETRIES = 3;
+        const BACKOFF_MS = [2000, 4000, 8000];
+        const IDLE_TIMEOUT = 2500;
+        const MAX_DAYS = 7;
+
+        let idleTimer = null;
+        let retryCount = 0;
+        let isSyncing = false;
+
+        function getIndicator() {
+            return document.getElementById("sync-indicator");
+        }
+
+        function getRetryBtn() {
+            return document.getElementById("retry-sync-btn");
+        }
+
+        function setIndicatorState(state) {
+            const el = getIndicator();
+            if (!el) return;
+            el.className = "";
+            if (state === "pending") el.classList.add("pending");
+            else if (state === "synced") el.classList.add("synced");
+            else if (state === "error") el.classList.add("error");
+        }
+
+        function showRetryBtn(show) {
+            const btn = getRetryBtn();
+            if (btn) {
+                btn.style.display = show ? "inline-block" : "none";
+            }
+        }
+
+        function todayStr() {
+            return new Date().toISOString().slice(0, 10);
+        }
+
+        function storageKey(classId, date) {
+            return "eval_attendance_" + classId + "_" + date;
+        }
+
+        function readLocal(classId, date) {
+            try {
+                const raw = localStorage.getItem(storageKey(classId, date));
+                if (!raw) return null;
+                return JSON.parse(raw);
+            } catch {
+                return null;
+            }
+        }
+
+        function writeLocal(classId, date, ids, synced) {
+            try {
+                const data = { ids: Array.from(ids), synced: synced || false, ts: Date.now() };
+                localStorage.setItem(storageKey(classId, date), JSON.stringify(data));
+            } catch {
+                // localStorage full or disabled — silently ignore
+            }
+        }
+
+        function cleanupOldKeys(classId) {
+            const today = todayStr();
+            const toDelete = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith("eval_attendance_" + classId + "_")) {
+                    const datePart = key.replace("eval_attendance_" + classId + "_", "");
+                    if (datePart !== today) {
+                        // Check if older than MAX_DAYS
+                        const diff = Math.floor((new Date(today) - new Date(datePart)) / 86400000);
+                        if (diff > MAX_DAYS) {
+                            toDelete.push(key);
+                        }
+                    }
+                }
+            }
+            toDelete.forEach(function (k) { localStorage.removeItem(k); });
+        }
+
+        function resetIdleTimer() {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(function () {
+                syncToServer();
+            }, IDLE_TIMEOUT);
+        }
+
+        function syncToServer() {
+            if (isSyncing) return;
+            if (!attendanceUrl) return;
+
+            const classId = state.class?.id;
+            if (!classId) return;
+
+            const presentIds = Array.from(selectedAttendance);
+            const date = state.attendance?.date || todayStr();
+
+            // Write to localStorage as pending
+            writeLocal(classId, date, presentIds, false);
+
+            isSyncing = true;
+            setIndicatorState("pending");
+            showRetryBtn(false);
+
+            function doSend(attempt) {
+                const payload = new URLSearchParams();
+                payload.append("class_id", String(classId));
+                payload.append("attendance_date", String(date));
+                presentIds.forEach(function (studentId) {
+                    payload.append("present_student_ids[]", String(studentId));
+                });
+
+                fetch(attendanceUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                        "X-CSRF-Token": csrfToken,
+                    },
+                    body: payload,
+                })
+                    .then(function (response) { return response.json().then(function (result) { return { response: response, result: result }; }); })
+                    .then(function (data) {
+                        if (!data.response.ok || !data.result.ok) {
+                            throw new Error(data.result.message || "No se pudo guardar la asistencia.");
+                        }
+                        return data.result.data;
+                    })
+                    .then(function (data) {
+                        // Success
+                        retryCount = 0;
+                        isSyncing = false;
+                        setIndicatorState("synced");
+                        showRetryBtn(false);
+
+                        // Mark as synced in localStorage
+                        writeLocal(classId, date, presentIds, true);
+
+                        // Update in-memory state
+                        if (data && data.state) {
+                            applyIncomingState(data.state);
+                            selectedAttendance = new Set(state.attendance?.present_student_ids || []);
+                            currentAttendanceDate = state.attendance?.date || "";
+                            renderState();
+                        }
+
+                        if (data && data.message) {
+                            setFeedback(data.message, data.date_changed ? "info" : "success");
+                        }
+                    })
+                    .catch(function (error) {
+                        if (attempt < MAX_RETRIES) {
+                            const delay = BACKOFF_MS[attempt];
+                            setTimeout(function () {
+                                doSend(attempt + 1);
+                            }, delay);
+                        } else {
+                            // All retries exhausted
+                            isSyncing = false;
+                            setIndicatorState("error");
+                            showRetryBtn(true);
+                        }
+                    });
+            }
+
+            doSend(0);
+        }
+
+        function onAttendanceToggle() {
+            const classId = state.class?.id;
+            if (!classId) return;
+            const date = state.attendance?.date || todayStr();
+
+            // Save to localStorage
+            writeLocal(classId, date, selectedAttendance, false);
+
+            // Set indicator to pending
+            setIndicatorState("pending");
+
+            // Reset idle timer
+            resetIdleTimer();
+        }
+
+        function recoverOnLoad() {
+            const classId = state.class?.id;
+            if (!classId) return;
+
+            cleanupOldKeys(classId);
+
+            const today = todayStr();
+            const key = storageKey(classId, today);
+            const data = readLocal(classId, today);
+
+            if (data && data.ids && data.ids.length > 0 && !data.synced) {
+                // Restore the selection in memory
+                data.ids.forEach(function (id) { selectedAttendance.add(id); });
+                renderState();
+
+                // Sync immediately
+                syncToServer();
+            }
+        }
+
+        function attachListeners() {
+            // Listen for clicks on attendance buttons (delegated)
+            if (attendanceContainer) {
+                attendanceContainer.addEventListener("click", function (e) {
+                    if (e.target.classList && e.target.classList.contains("attendance-student-button")) {
+                        onAttendanceToggle();
+                    }
+                });
+                attendanceContainer.addEventListener("touchend", function (e) {
+                    if (e.target.classList && e.target.classList.contains("attendance-student-button")) {
+                        onAttendanceToggle();
+                    }
+                });
+            }
+
+            // Visibility change: sync immediately when page is hidden
+            document.addEventListener("visibilitychange", function () {
+                if (document.visibilityState === "hidden") {
+                    syncToServer();
+                }
+            });
+
+            // Retry button
+            const retryBtn = getRetryBtn();
+            if (retryBtn) {
+                retryBtn.addEventListener("click", function () {
+                    retryCount = 0;
+                    syncToServer();
+                });
+            }
+        }
+
+        function init() {
+            attachListeners();
+            // Delay recovery until after initial render
+            setTimeout(recoverOnLoad, 100);
+        }
+
+        return {
+            init: init,
+            onToggle: onAttendanceToggle,
+            sync: syncToServer,
+        };
+    })();
 
     function applyIncomingState(incomingState) {
         const nextAttendanceDate = incomingState.attendance?.date || "";
@@ -232,9 +481,6 @@ if (app) {
             empty.className = "muted";
             empty.textContent = "No hay alumnos en esta clase.";
             attendanceContainer.appendChild(empty);
-            if (saveAttendanceButton) {
-                saveAttendanceButton.disabled = true;
-            }
             return;
         }
 
@@ -265,10 +511,6 @@ if (app) {
 
             attendanceContainer.appendChild(button);
         });
-
-        if (saveAttendanceButton) {
-            saveAttendanceButton.disabled = false;
-        }
     }
 
     function renderState() {
@@ -508,48 +750,6 @@ if (app) {
         }
     }
 
-    async function handleSaveAttendance() {
-        if (!saveAttendanceButton) {
-            return;
-        }
-
-        saveAttendanceButton.disabled = true;
-
-        try {
-            const payload = new URLSearchParams();
-            payload.append("class_id", String(state.class.id));
-            payload.append("attendance_date", String(state.attendance?.date || ""));
-            Array.from(selectedAttendance).forEach((studentId) => {
-                payload.append("present_student_ids[]", String(studentId));
-            });
-
-            const response = await fetch(attendanceUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                    "X-CSRF-Token": csrfToken,
-                },
-                body: payload,
-            });
-
-            const result = await response.json();
-            if (!response.ok || !result.ok) {
-                throw new Error(result.message || "No se pudo guardar la asistencia.");
-            }
-
-            const data = result.data;
-            applyIncomingState(data.state);
-            selectedAttendance = new Set(state.attendance?.present_student_ids || []);
-            currentAttendanceDate = state.attendance?.date || "";
-            renderState();
-            setFeedback(data.message || "Asistencia guardada.", data.date_changed ? "info" : "success");
-        } catch (error) {
-            setFeedback(error.message, "error");
-        } finally {
-            saveAttendanceButton.disabled = false;
-        }
-    }
-
     function escapeHtml(value) {
         return String(value)
             .replaceAll("&", "&amp;")
@@ -566,14 +766,13 @@ if (app) {
         button.addEventListener("click", () => handleEvaluation(button.dataset.score));
     });
 
-    if (saveAttendanceButton) {
-        saveAttendanceButton.addEventListener("click", handleSaveAttendance);
-    }
-
     window.addEventListener("resize", () => {
         drawWheel();
         updateWinnerDisplay();
     });
 
     renderState();
+
+    // Initialize auto-save attendance
+    AttendanceSync.init();
 }

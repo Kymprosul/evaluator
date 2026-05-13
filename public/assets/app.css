@@ -280,6 +280,29 @@ label { display: grid; gap: 0.5rem; color: var(--muted); }
 	margin-left: 0.5rem;
 }
 
+#sync-indicator {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background-color: #10b981;
+	margin-left: 0.5rem;
+	transition: background-color 200ms ease;
+	vertical-align: middle;
+}
+
+#sync-indicator.pending {
+	background-color: #f59e0b;
+}
+
+#sync-indicator.synced {
+	background-color: #10b981;
+}
+
+#sync-indicator.error {
+	background-color: #ef4444;
+}
+
 .attendance-student-button {
 	border: 0;
 	background: rgba(255, 250, 242, 0.82);

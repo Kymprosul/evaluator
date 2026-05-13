@@ -106,9 +106,9 @@ render_page_start(__('classroom'));
 </section>
 
 <section class="info-card attendance-board">
-    <h2><?= e(__('attendance')) ?> <span id="attendance-date" class="attendance-date"></span></h2>
+    <h2><?= e(__('attendance')) ?> <span id="attendance-date" class="attendance-date"></span> <span id="sync-indicator" title="Sync status"></span></h2>
     <div id="attendance-students" class="attendance-grid"></div>
-    <button type="button" id="save-attendance-button" class="primary-button"><?= e(__('save_attendance')) ?></button>
+    <button id="retry-sync-btn" style="display:none" class="secondary-button">Reintentar</button>
 </section>
 
 <?php $classroomJsVersion = is_file(__DIR__ . '/assets/classroom.js') ? (string) filemtime(__DIR__ . '/assets/classroom.js') : '1'; ?>
