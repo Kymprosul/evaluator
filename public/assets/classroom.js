@@ -282,6 +282,403 @@ if (app) {
         };
     })();
 
+    // ============================================================
+    // EvaluationSync module — local-first spin/evaluate with queue
+    // ============================================================
+    const EvaluationSync = (function () {
+        const MAX_RETRIES = 3;
+        const BACKOFF_MS = [2000, 4000, 8000];
+        const QUEUE_KEY_PREFIX = "eval_queue_";
+        const ID_MAP_PREFIX = "eval_id_map_";
+
+        let isDraining = false;
+        let drainTimer = null;
+        let idMap = {}; // tempId → realId mapping
+
+        // --- localStorage helpers ---
+
+        function queueKey(classId) {
+            return QUEUE_KEY_PREFIX + classId;
+        }
+
+        function idMapKey(classId) {
+            return ID_MAP_PREFIX + classId;
+        }
+
+        function readQueue(classId) {
+            try {
+                const raw = localStorage.getItem(queueKey(classId));
+                return raw ? JSON.parse(raw) : [];
+            } catch {
+                return [];
+            }
+        }
+
+        function writeQueue(classId, queue) {
+            try {
+                localStorage.setItem(queueKey(classId), JSON.stringify(queue));
+            } catch {
+                // localStorage full — silently ignore
+            }
+        }
+
+        function readIdMap(classId) {
+            try {
+                const raw = localStorage.getItem(idMapKey(classId));
+                return raw ? JSON.parse(raw) : {};
+            } catch {
+                return {};
+            }
+        }
+
+        function writeIdMap(classId, map) {
+            try {
+                localStorage.setItem(idMapKey(classId), JSON.stringify(map));
+            } catch {
+                // silently ignore
+            }
+        }
+
+        function generateTempId(prefix) {
+            const ts = Date.now();
+            const rand = Math.random().toString(36).slice(2, 10);
+            return prefix + "_" + ts + "_" + rand;
+        }
+
+        // --- Indicator helpers ---
+
+        function getSpinIndicator() {
+            return document.getElementById("eval-sync-indicator");
+        }
+
+        function getEvalIndicator() {
+            return document.getElementById("eval-score-indicator");
+        }
+
+        function getRetryBtn() {
+            return document.getElementById("eval-retry-btn");
+        }
+
+        function setIndicatorState(el, syncState) {
+            if (!el) return;
+            el.className = el.className.replace(/\b(pending|synced|error)\b/g, "").trim();
+            if (syncState) el.classList.add(syncState);
+        }
+
+        function updateIndicators() {
+            const classId = state.class?.id;
+            if (!classId) return;
+
+            const queue = readQueue(classId);
+            const hasPending = queue.length > 0;
+            const hasError = queue.some(function (a) { return a.retryCount >= MAX_RETRIES; });
+
+            const spinInd = getSpinIndicator();
+            const evalInd = getEvalIndicator();
+            const retryBtn = getRetryBtn();
+
+            if (hasError) {
+                setIndicatorState(spinInd, "error");
+                setIndicatorState(evalInd, "error");
+                if (retryBtn) retryBtn.style.display = "inline-block";
+            } else if (hasPending) {
+                setIndicatorState(spinInd, "pending");
+                setIndicatorState(evalInd, "pending");
+                if (retryBtn) retryBtn.style.display = "none";
+            } else {
+                setIndicatorState(spinInd, "synced");
+                setIndicatorState(evalInd, "synced");
+                if (retryBtn) retryBtn.style.display = "none";
+            }
+        }
+
+        // --- Queue operations ---
+
+        function enqueue(classId, action) {
+            const queue = readQueue(classId);
+            queue.push(action);
+            writeQueue(classId, queue);
+            updateIndicators();
+            scheduleDrain(classId);
+        }
+
+        function removeAction(classId, tempId) {
+            const queue = readQueue(classId);
+            const filtered = queue.filter(function (a) { return a.tempId !== tempId; });
+            writeQueue(classId, filtered);
+        }
+
+        function updateActionEvaluationId(classId, oldEvalId, newEvalId) {
+            const queue = readQueue(classId);
+            queue.forEach(function (action) {
+                if (action.type === "evaluate" && action.evaluationId === oldEvalId) {
+                    action.evaluationId = newEvalId;
+                }
+            });
+            writeQueue(classId, queue);
+        }
+
+        // --- ID mapping ---
+
+        function mapTempToReal(classId, tempId, realId) {
+            idMap = readIdMap(classId);
+            idMap[tempId] = realId;
+            writeIdMap(classId, idMap);
+        }
+
+        function resolveId(classId, id) {
+            if (typeof id === "number") return id;
+            if (typeof id === "string" && id.startsWith("spin_")) {
+                idMap = readIdMap(classId);
+                return idMap[id] || null;
+            }
+            return id;
+        }
+
+        // --- Network ---
+
+        function postAction(url, payload) {
+            return fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-CSRF-Token": csrfToken,
+                },
+                body: new URLSearchParams(payload),
+            }).then(function (response) {
+                return response.json().then(function (result) {
+                    return { response: response, result: result };
+                });
+            }).then(function (data) {
+                if (!data.response.ok || !data.result.ok) {
+                    throw new Error(data.result.message || "Error del servidor.");
+                }
+                return data.result.data;
+            });
+        }
+
+        // --- Drain (process queue) ---
+
+        function drain(classId) {
+            if (isDraining) return;
+            if (!classId) classId = state.class?.id;
+            if (!classId) return;
+
+            const queue = readQueue(classId);
+            if (queue.length === 0) {
+                updateIndicators();
+                return;
+            }
+
+            isDraining = true;
+            drainOne(classId, 0);
+        }
+
+        function drainOne(classId, index) {
+            const queue = readQueue(classId);
+            if (index >= queue.length) {
+                isDraining = false;
+                updateIndicators();
+                return;
+            }
+
+            const action = queue[index];
+
+            // Skip confirmed actions
+            if (action.status === "confirmed") {
+                removeAction(classId, action.tempId);
+                isDraining = false;
+                drain(classId);
+                return;
+            }
+
+            // Max retries exhausted
+            if (action.retryCount >= MAX_RETRIES) {
+                isDraining = false;
+                updateIndicators();
+                return;
+            }
+
+            // Build request based on type
+            let url, payload;
+
+            if (action.type === "spin") {
+                url = spinUrl;
+                payload = {
+                    class_id: String(classId),
+                    student_id: String(action.studentId),
+                };
+            } else if (action.type === "evaluate") {
+                url = evaluateUrl;
+                var evalId = resolveId(classId, action.evaluationId);
+
+                // If we still can't resolve the ID (spin not confirmed yet), postpone
+                if (evalId === null) {
+                    setTimeout(function () {
+                        drainOne(classId, index);
+                    }, 500);
+                    return;
+                }
+
+                payload = {
+                    class_id: String(classId),
+                    evaluation_id: String(evalId),
+                    score: action.score,
+                };
+            } else if (action.type === "reset") {
+                url = resetUrl;
+                payload = {
+                    class_id: String(classId),
+                };
+            } else {
+                // Unknown type — remove and continue
+                removeAction(classId, action.tempId);
+                isDraining = false;
+                drain(classId);
+                return;
+            }
+
+            postAction(url, payload)
+                .then(function (data) {
+                    // Success — remove from queue
+                    removeAction(classId, action.tempId);
+
+                    // Map tempId to real ID if this was a spin
+                    if (action.type === "spin" && data.selected && data.selected.id) {
+                        mapTempToReal(classId, action.tempId, data.selected.id);
+                        // Update any pending evaluates that reference this tempId
+                        updateActionEvaluationId(classId, action.tempId, data.selected.id);
+                    }
+
+                    // Apply server state for reconciliation
+                    if (data.state) {
+                        applyIncomingState(data.state);
+                        renderState();
+                    }
+
+                    // Continue draining
+                    isDraining = false;
+                    drain(classId);
+                })
+                .catch(function (error) {
+                    // Business error (server rejected) — reconcile and remove
+                    if (error.message && !error.message.includes("Failed to fetch") && !error.message.includes("NetworkError")) {
+                        removeAction(classId, action.tempId);
+                        // Try to get fresh state from server
+                        postAction(spinUrl, { class_id: String(classId), _peek: "1" })
+                            .catch(function () { /* ignore */ });
+                        isDraining = false;
+                        setFeedback("Se actualizó la información. " + error.message, "info");
+                        drain(classId);
+                        return;
+                    }
+
+                    // Network error — retry with backoff
+                    action.retryCount = (action.retryCount || 0) + 1;
+                    var q = readQueue(classId);
+                    var idx = q.findIndex(function (a) { return a.tempId === action.tempId; });
+                    if (idx !== -1) {
+                        q[idx].retryCount = action.retryCount;
+                        writeQueue(classId, q);
+                    }
+
+                    if (action.retryCount < MAX_RETRIES) {
+                        var delay = BACKOFF_MS[action.retryCount - 1];
+                        setTimeout(function () {
+                            isDraining = false;
+                            drainOne(classId, index);
+                        }, delay);
+                    } else {
+                        isDraining = false;
+                        updateIndicators();
+                        setFeedback("Error de conexión. Pulsa 'Reintentar' para sincronizar.", "error");
+                    }
+                });
+        }
+
+        function scheduleDrain(classId) {
+            clearTimeout(drainTimer);
+            drainTimer = setTimeout(function () {
+                drain(classId);
+            }, 100);
+        }
+
+        function forceSync() {
+            var classId = state.class?.id;
+            if (!classId) return;
+
+            // Reset retry counts
+            var queue = readQueue(classId);
+            queue.forEach(function (a) {
+                if (a.retryCount >= MAX_RETRIES) {
+                    a.retryCount = 0;
+                }
+            });
+            writeQueue(classId, queue);
+
+            isDraining = false;
+            drain(classId);
+        }
+
+        // --- Listeners ---
+
+        function attachListeners() {
+            // Online event — retry when connection restored
+            window.addEventListener("online", function () {
+                forceSync();
+            });
+
+            // Visibility change — sync when tab hidden
+            document.addEventListener("visibilitychange", function () {
+                if (document.visibilityState === "hidden") {
+                    forceSync();
+                }
+            });
+
+            // Retry button
+            var retryBtn = getRetryBtn();
+            if (retryBtn) {
+                retryBtn.addEventListener("click", function () {
+                    forceSync();
+                });
+            }
+        }
+
+        // --- Init ---
+
+        function init() {
+            var classId = state.class?.id;
+            if (!classId) return;
+
+            idMap = readIdMap(classId);
+            attachListeners();
+
+            // Drain queue from previous session
+            setTimeout(function () {
+                drain(classId);
+            }, 200);
+        }
+
+        function getStatus() {
+            var classId = state.class?.id;
+            if (!classId) return { pending: 0, syncing: false };
+            var queue = readQueue(classId);
+            return {
+                pending: queue.length,
+                syncing: isDraining,
+            };
+        }
+
+        return {
+            init: init,
+            enqueue: enqueue,
+            drain: drain,
+            forceSync: forceSync,
+            getStatus: getStatus,
+            generateTempId: generateTempId,
+        };
+    })();
+
     function applyIncomingState(incomingState) {
         const nextAttendanceDate = incomingState.attendance?.date || "";
         if (nextAttendanceDate !== currentAttendanceDate) {
@@ -685,69 +1082,131 @@ if (app) {
         state.remaining_students = original;
     }
 
-    async function handleSpin() {
-        if (isAnimating) {
-            return;
-        }
+    // ============================================================
+    // LOCAL-FIRST HANDLERS
+    // ============================================================
 
+    function handleSpin() {
+        if (isAnimating) return;
+        if (state.pending_evaluation !== null) return;
+        if (!state.stats.can_spin) return;
+
+        const remaining = currentSegments();
+        if (remaining.length === 0) return;
+
+        const classId = state.class.id;
+
+        // 1. Pick student locally
+        const chosen = remaining[Math.floor(Math.random() * remaining.length)];
+        const tempId = EvaluationSync.generateTempId("spin");
+
+        // 2. Update state immediately
+        state.pending_evaluation = {
+            id: tempId,
+            score: null,
+            selected_at: new Date().toISOString(),
+            evaluated_at: null,
+            evaluated_by: null,
+            student: { id: chosen.id, code: chosen.code, name: chosen.name, label: chosen.label },
+            tempId: tempId,
+        };
+        state.remaining_students = remaining.filter(function (s) { return Number(s.id) !== Number(chosen.id); });
+        state.stats.remaining_students = state.remaining_students.length;
+        state.stats.can_spin = false;
+        state.stats.can_reset = false;
+
+        // 3. Animate immediately
         clearWinnerDisplay();
-        const previousSegments = [...currentSegments()];
+        const previousSegments = [...remaining];
         startPendingSpin(previousSegments);
 
-        try {
-            setFeedback("Girando ruleta...");
-            const data = await postJson(spinUrl, { class_id: state.class.id });
+        setTimeout(function () {
             stopPendingSpin();
-            animateToSelected(data.selected.student, previousSegments, data.state);
-        } catch (error) {
-            stopPendingSpin();
-            isAnimating = false;
-            renderState();
-            setFeedback(error.message, "error");
-        }
+            animateToSelected(chosen, previousSegments, state);
+        }, 400);
+
+        // 4. Enqueue for server sync
+        EvaluationSync.enqueue(classId, {
+            tempId: tempId,
+            type: "spin",
+            classId: classId,
+            studentId: chosen.id,
+            timestamp: Date.now(),
+            retryCount: 0,
+        });
     }
 
-    async function handleEvaluation(score) {
-        if (!state.pending_evaluation || isAnimating) {
-            return;
+    function handleEvaluation(score) {
+        if (!state.pending_evaluation || isAnimating) return;
+
+        const classId = state.class.id;
+        const evaluation = state.pending_evaluation;
+
+        // 1. Update state immediately
+        state.recent_evaluations.unshift({
+            student: evaluation.student.label,
+            score: score,
+            evaluated_at: new Date().toISOString(),
+        });
+        if (state.recent_evaluations.length > 8) {
+            state.recent_evaluations.pop();
         }
 
-        try {
-            const data = await postJson(evaluateUrl, {
-                class_id: state.class.id,
-                evaluation_id: state.pending_evaluation.id,
-                score,
-            });
+        state.pending_evaluation = null;
+        state.stats.evaluated_students += 1;
 
-            applyIncomingState(data.state);
-            renderState();
-            setFeedback(`Evaluación guardada con "${score}".`, "success");
-        } catch (error) {
-            setFeedback(error.message, "error");
+        // Check if this was the last student
+        if (state.remaining_students.length === 0) {
+            state.cycle.status = "completed";
+            state.stats.can_spin = false;
+            state.stats.can_reset = true;
+        } else {
+            state.stats.can_spin = true;
+            state.stats.can_reset = true;
         }
+
+        // 2. Update UI immediately
+        clearWinnerDisplay();
+        renderState();
+        setFeedback(`Evaluación guardada con "${score}".`, "success");
+
+        // 3. Enqueue for server sync
+        EvaluationSync.enqueue(classId, {
+            tempId: EvaluationSync.generateTempId("eval"),
+            type: "evaluate",
+            classId: classId,
+            evaluationId: evaluation.id,
+            studentId: evaluation.student.id,
+            score: score,
+            timestamp: Date.now(),
+            retryCount: 0,
+        });
     }
 
-    async function handleReset() {
-        if (isAnimating) {
-            return;
-        }
+    function handleReset() {
+        if (isAnimating) return;
 
         const confirmed = window.confirm(
             "Se creará una nueva ronda aunque todavía queden alumnos pendientes. ¿Quieres continuar?"
         );
-        if (!confirmed) {
-            return;
-        }
+        if (!confirmed) return;
 
-        try {
-            const data = await postJson(resetUrl, { class_id: state.class.id });
-            applyIncomingState(data.state);
-            rotation = 0;
-            renderState();
-            setFeedback(data.message, "success");
-        } catch (error) {
-            setFeedback(error.message, "error");
-        }
+        const classId = state.class.id;
+
+        // Optimistic: disable buttons while syncing
+        state.stats.can_reset = false;
+        state.stats.can_spin = false;
+        renderState();
+        setFeedback("Creando nueva ronda...", "success");
+
+        // Enqueue for server sync — state will be reconciled on success
+        EvaluationSync.enqueue(classId, {
+            tempId: EvaluationSync.generateTempId("reset"),
+            type: "reset",
+            classId: classId,
+            timestamp: Date.now(),
+            retryCount: 0,
+        });
     }
 
     function escapeHtml(value) {
@@ -775,4 +1234,7 @@ if (app) {
 
     // Initialize auto-save attendance
     AttendanceSync.init();
+
+    // Initialize evaluation sync (local-first)
+    EvaluationSync.init();
 }

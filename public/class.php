@@ -58,13 +58,16 @@ render_page_start(__('classroom'));
         </div>
         <div class="wheel-actions">
             <button type="button" id="spin-button" class="primary-button"><?= e(__('spin_roulette')) ?></button>
+            <span id="eval-sync-indicator" class="sync-dot synced" title="Sync status"></span>
         </div>
         <div class="evaluation-actions">
             <button type="button" class="eval-button eval-positive" data-score="+">+</button>
             <button type="button" class="eval-button eval-neutral" data-score="=">=</button>
             <button type="button" class="eval-button eval-negative" data-score="-">-</button>
+            <span id="eval-score-indicator" class="sync-dot synced" title="Sync status"></span>
         </div>
         <div id="classroom-feedback" class="feedback-message"></div>
+        <button id="eval-retry-btn" style="display:none" class="secondary-button">Reintentar sync</button>
     </div>
 
     <aside class="sidebar-panel">

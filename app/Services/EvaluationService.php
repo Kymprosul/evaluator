@@ -124,7 +124,7 @@ final class EvaluationService
         ];
     }
 
-    public function spin(int $classId, int $viewerUserId, bool $isAdmin): array
+    public function spin(int $classId, int $viewerUserId, bool $isAdmin, ?int $requestedStudentId = null): array
     {
         $classroom = $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
         $cycle = $this->currentCycle($classId);
@@ -142,7 +142,19 @@ final class EvaluationService
             throw new RuntimeException('No quedan alumnos en esta ronda. Reinicia la clase para comenzar otra.');
         }
 
-        $selectedStudent = $students[random_int(0, count($students) - 1)];
+        // Use requested student if valid, otherwise random
+        $selectedStudent = null;
+        if ($requestedStudentId !== null) {
+            foreach ($students as $student) {
+                if ((int) $student['id'] === $requestedStudentId) {
+                    $selectedStudent = $student;
+                    break;
+                }
+            }
+        }
+        if ($selectedStudent === null) {
+            $selectedStudent = $students[random_int(0, count($students) - 1)];
+        }
         $statement = Database::connection()->prepare(
             'INSERT INTO evaluations (class_id, student_id, cycle_id, score, selected_at, evaluated_by, evaluated_at)
              VALUES (:class_id, :student_id, :cycle_id, :score, :selected_at, :evaluated_by, :evaluated_at)'

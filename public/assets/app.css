@@ -303,6 +303,37 @@ label { display: grid; gap: 0.5rem; color: var(--muted); }
 	background-color: #ef4444;
 }
 
+/* Sync dots for spin and evaluate indicators */
+.sync-dot {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background-color: #10b981;
+	margin-left: 0.5rem;
+	transition: background-color 200ms ease;
+	vertical-align: middle;
+	flex-shrink: 0;
+}
+
+.sync-dot.pending {
+	background-color: #f59e0b;
+}
+
+.sync-dot.synced {
+	background-color: #10b981;
+}
+
+.sync-dot.error {
+	background-color: #ef4444;
+}
+
+#eval-retry-btn {
+	margin-top: 0.5rem;
+	font-size: 0.85rem;
+	padding: 0.4rem 1rem;
+}
+
 .attendance-student-button {
 	border: 0;
 	background: rgba(255, 250, 242, 0.82);
