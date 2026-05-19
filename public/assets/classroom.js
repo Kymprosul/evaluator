@@ -259,6 +259,18 @@ if (app) {
                 }
             });
 
+            // Warn before closing if attendance is unsynced
+            window.addEventListener("beforeunload", function (e) {
+                var classId = state.class?.id;
+                if (!classId) return;
+                var date = state.attendance?.date || todayStr();
+                var data = readLocal(classId, date);
+                if (data && !data.synced) {
+                    e.preventDefault();
+                    e.returnValue = "";
+                }
+            });
+
             // Retry button
             const retryBtn = getRetryBtn();
             if (retryBtn) {
@@ -632,6 +644,17 @@ if (app) {
             document.addEventListener("visibilitychange", function () {
                 if (document.visibilityState === "hidden") {
                     forceSync();
+                }
+            });
+
+            // Warn before closing if there are pending actions
+            window.addEventListener("beforeunload", function (e) {
+                var classId = state.class?.id;
+                if (!classId) return;
+                var queue = readQueue(classId);
+                if (queue.length > 0) {
+                    e.preventDefault();
+                    e.returnValue = "";
                 }
             });
 
