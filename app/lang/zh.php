@@ -67,4 +67,10 @@ return [
     'column_added' => '列已添加。',
     'column_deleted' => '列已删除。',
     'confirm' => '确认',
+    'report_type_vip' => 'VIP',
+    'remove_vip' => '取消 VIP',
+    'make_vip' => '设为 VIP',
+    'vip_weeks' => '周数',
+    'vip_gap' => '空格',
+    'no_vip' => '本班没有 VIP 学生。',
 ];

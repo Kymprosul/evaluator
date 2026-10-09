@@ -461,3 +461,24 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .form-card, .table-card { background: var(--surface); border: 1px solid rgba(255, 255, 255, 0.7); box-shadow: var(--shadow); border-radius: var(--radius); padding: 1.35rem; }
 .soft-card { background: var(--surface-strong); border-color: var(--line); box-shadow: none; }
 .report-title-row { margin-bottom: 1rem; border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
+
+.attendance-student-button.is-vip {
+	color: #b8860b;
+	background: rgba(212, 175, 55, 0.16);
+	box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.6), var(--shadow-sm);
+	cursor: not-allowed;
+}
+
+.vip-toggle { display: inline-block; margin-right: 0.4rem; }
+
+.vip-button {
+	border: 0;
+	background: none;
+	cursor: pointer;
+	font-size: 1.1rem;
+	color: var(--muted, #6f6656);
+}
+
+.vip-button.is-vip { color: #d4af37; }
+
+.vip-name { font-weight: 700; color: #b8860b; }

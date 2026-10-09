@@ -911,6 +911,14 @@ if (app) {
             button.textContent = student.label;
             button.dataset.studentId = String(student.id);
 
+            if (student.vip) {
+                button.classList.add("is-vip");
+                button.disabled = true;
+                button.title = "VIP";
+                attendanceContainer.appendChild(button);
+                return;
+            }
+
             if (selectedAttendance.has(Number(student.id))) {
                 button.classList.add("is-present");
             }
@@ -1130,7 +1138,7 @@ if (app) {
             selected_at: new Date().toISOString(),
             evaluated_at: null,
             evaluated_by: null,
-            student: { id: chosen.id, code: chosen.code, name: chosen.name, label: chosen.label },
+            student: { id: chosen.id, code: chosen.code, name: chosen.name, label: chosen.label, vip: !!chosen.vip },
             tempId: tempId,
         };
         state.remaining_students = remaining.filter(function (s) { return Number(s.id) !== Number(chosen.id); });

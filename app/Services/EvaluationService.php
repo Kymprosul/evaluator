@@ -62,7 +62,10 @@ final class EvaluationService
         $classroom = $this->accessibleClassroom($classId, $userId, $isAdmin);
         $attendanceDate = date('Y-m-d');
         $students = $this->classes->studentsForClass($classId);
-        $allowedStudentIds = array_map(static fn(array $student): int => (int) $student['id'], $students);
+        $allowedStudentIds = array_values(array_map(
+            static fn(array $student): int => (int) $student['id'],
+            array_filter($students, static fn(array $student): bool => empty($student['is_vip']))
+        ));
 
         if ($clientAttendanceDate !== null && $clientAttendanceDate !== '' && $clientAttendanceDate !== $attendanceDate) {
             return [
@@ -289,7 +292,8 @@ final class EvaluationService
     private function remainingStudents(int $classId, int $cycleId): array
     {
         $statement = Database::connection()->prepare(
-            'SELECT s.id, s.student_code, s.display_name
+            'SELECT s.id, s.student_code, s.display_name,
+                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = cs.class_id AND v.student_id = s.id) AS is_vip
              FROM class_students cs
              INNER JOIN students s ON s.id = cs.student_id
              LEFT JOIN evaluations e
@@ -312,7 +316,8 @@ final class EvaluationService
     private function pendingEvaluation(int $classId, int $cycleId): ?array
     {
         $statement = Database::connection()->prepare(
-            'SELECT e.id, e.score, e.selected_at, e.evaluated_at, s.id AS student_id, s.student_code, s.display_name
+            'SELECT e.id, e.score, e.selected_at, e.evaluated_at, s.id AS student_id, s.student_code, s.display_name,
+                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = e.class_id AND v.student_id = s.id) AS is_vip
              FROM evaluations e
              INNER JOIN students s ON s.id = e.student_id
              WHERE e.class_id = :class_id
@@ -401,6 +406,7 @@ final class EvaluationService
             'code' => $student['student_code'],
             'name' => $student['display_name'],
             'label' => $this->studentLabel($student),
+            'vip' => !empty($student['is_vip']),
         ];
     }
 
@@ -416,6 +422,7 @@ final class EvaluationService
                 'code' => $evaluation['student_code'],
                 'name' => $evaluation['display_name'],
                 'label' => $this->studentLabel($evaluation),
+                'vip' => !empty($evaluation['is_vip']),
             ],
         ];
     }
@@ -425,11 +432,9 @@ final class EvaluationService
         $name = trim((string) ($student['display_name'] ?? ''));
         $code = trim((string) ($student['student_code'] ?? ''));
 
-        if ($name !== '') {
-            return $name . ' (' . $code . ')';
-        }
+        $label = $name !== '' ? $name . ' (' . $code . ')' : $code;
 
-        return $code;
+        return empty($student['is_vip']) ? $label : $label . ' ★ VIP';
     }
 
     private function runtimeState(int $classId, array $classroom, array $cycle): array

@@ -67,4 +67,10 @@ return [
     'column_added' => 'Columna añadida.',
     'column_deleted' => 'Columna eliminada.',
     'confirm' => 'Confirmar',
+    'report_type_vip' => 'VIP',
+    'remove_vip' => 'Quitar VIP',
+    'make_vip' => 'Hacer VIP',
+    'vip_weeks' => 'Semanas',
+    'vip_gap' => 'Hueco',
+    'no_vip' => 'No hay alumnos VIP en esta clase.',
 ];

@@ -14,7 +14,7 @@ $classes = $repository->allWithStats($currentUserId, $isAdmin);
 $selectedClassId = (int) (post_value('class_id') ?: get_value('class_id', $classes[0]['id'] ?? 0));
 $selectedReportType = (string) (post_value('report_type') ?: get_value('report_type', 'exercises'));
 
-if (!in_array($selectedReportType, ['exercises', 'attendance'], true)) {
+if (!in_array($selectedReportType, ['exercises', 'attendance', 'vip'], true)) {
     $selectedReportType = 'exercises';
 }
 
@@ -24,7 +24,21 @@ if (is_post()) {
     try {
         $action = (string) post_value('action', '');
 
-        if ($selectedReportType === 'exercises' && $action === 'update_score') {
+        if ($action === 'toggle_vip' && in_array($selectedReportType, ['exercises', 'attendance'], true)) {
+            $makeVip = (string) post_value('vip', '1') === '1';
+            $reportService->setVip($selectedClassId, (int) post_value('student_id', 0), $makeVip, $currentUserId, $isAdmin);
+            flash('success', $makeVip ? 'Alumno marcado como VIP.' : 'VIP eliminado.');
+        } elseif ($selectedReportType === 'vip' && $action === 'save_vip') {
+            $completed = $reportService->saveVipGaps(
+                $selectedClassId,
+                (int) post_value('student_id', 0),
+                (string) post_value('gap_1', ''),
+                (string) post_value('gap_2', ''),
+                $currentUserId,
+                $isAdmin
+            );
+            flash('success', $completed ? 'Huecos completados. Ya no es VIP.' : 'Guardado.');
+        } elseif ($selectedReportType === 'exercises' && $action === 'update_score') {
             $reportService->updateScore((int) post_value('evaluation_id', 0), (string) post_value('score', ''), $currentUserId, $isAdmin);
             flash('success', 'Nota actualizada manualmente.');
         } elseif ($selectedReportType === 'exercises' && $action === 'save_bulk') {
@@ -76,7 +90,7 @@ if (is_post()) {
     redirect_to(app_url('reports.php?class_id=' . $selectedClassId . '&report_type=' . urlencode($selectedReportType)));
 }
 
-if ((string) get_value('export', '') !== '' && $selectedClassId > 0) {
+if ((string) get_value('export', '') !== '' && $selectedClassId > 0 && $selectedReportType !== 'vip') {
     $matrix = $selectedReportType === 'attendance'
         ? $reportService->attendanceReportMatrix($selectedClassId, $currentUserId, $isAdmin)
         : $reportService->reportMatrix($selectedClassId, $currentUserId, $isAdmin);
@@ -105,10 +119,31 @@ if ((string) get_value('export', '') !== '' && $selectedClassId > 0) {
 
 $matrix = null;
 if ($selectedClassId > 0) {
-    $matrix = $selectedReportType === 'attendance'
-        ? $reportService->attendanceReportMatrix($selectedClassId, $currentUserId, $isAdmin)
-        : $reportService->reportMatrix($selectedClassId, $currentUserId, $isAdmin);
+    $matrix = match ($selectedReportType) {
+        'attendance' => $reportService->attendanceReportMatrix($selectedClassId, $currentUserId, $isAdmin),
+        'vip' => $reportService->vipReport($selectedClassId, $currentUserId, $isAdmin),
+        default => $reportService->reportMatrix($selectedClassId, $currentUserId, $isAdmin),
+    };
 }
+$vipIds = [];
+if ($matrix !== null && $selectedReportType !== 'vip') {
+    foreach ($repository->studentsForClass($selectedClassId) as $student) {
+        if (!empty($student['is_vip'])) {
+            $vipIds[(int) $student['id']] = true;
+        }
+    }
+}
+
+$renderVipToggle = static function (int $studentId, bool $isVip) use ($selectedClassId, $selectedReportType): string {
+    return '<form method="post" class="inline-form vip-toggle">' . csrf_field()
+        . '<input type="hidden" name="action" value="toggle_vip">'
+        . '<input type="hidden" name="class_id" value="' . e((string) $selectedClassId) . '">'
+        . '<input type="hidden" name="report_type" value="' . e($selectedReportType) . '">'
+        . '<input type="hidden" name="student_id" value="' . $studentId . '">'
+        . '<input type="hidden" name="vip" value="' . ($isVip ? '0' : '1') . '">'
+        . '<button type="submit" class="vip-button' . ($isVip ? ' is-vip' : '') . '" title="' . e(__($isVip ? 'remove_vip' : 'make_vip')) . '">' . ($isVip ? '★' : '☆') . '</button>'
+        . '</form>';
+};
 
 render_page_start(__('reports'));
 ?>
@@ -143,12 +178,13 @@ render_page_start(__('reports'));
                 <select name="report_type" required>
                     <option value="exercises" <?= $selectedReportType === 'exercises' ? 'selected' : '' ?>><?= e(__('report_type_exercises')) ?></option>
                     <option value="attendance" <?= $selectedReportType === 'attendance' ? 'selected' : '' ?>><?= e(__('report_type_attendance')) ?></option>
+                    <option value="vip" <?= $selectedReportType === 'vip' ? 'selected' : '' ?>><?= e(__('report_type_vip')) ?></option>
                 </select>
             </label>
             <button type="submit" class="primary-button"><?= e(__('run_report')) ?></button>
         </form>
 
-        <?php if ($matrix !== null): ?>
+        <?php if ($matrix !== null && $selectedReportType !== 'vip'): ?>
             <div class="button-row report-actions">
                 <?php if ($selectedReportType === 'exercises'): ?>
                     <form method="post" class="inline-form">
@@ -176,6 +212,47 @@ render_page_start(__('reports'));
 
     <?php if ($classes !== [] && $matrix !== null && $selectedReportType === 'exercises' && $matrix['cycles'] === []): ?>
         <p class="muted"><?= e(__('no_cycles')) ?></p>
+    <?php elseif ($classes !== [] && $matrix !== null && $selectedReportType === 'vip'): ?>
+        <div class="report-title-row">
+            <h2><?= e($matrix['class_label']) ?></h2>
+        </div>
+        <?php if ($matrix['rows'] === []): ?>
+            <p class="muted"><?= e(__('no_vip')) ?></p>
+        <?php else: ?>
+            <div class="table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th><?= e(__('student')) ?></th>
+                            <th><?= e(__('vip_weeks')) ?></th>
+                            <th><?= e(__('vip_gap')) ?> 1</th>
+                            <th><?= e(__('vip_gap')) ?> 2</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($matrix['rows'] as $row): ?>
+                            <tr>
+                                <td class="vip-name"><?= e($row['student_label']) ?></td>
+                                <td><?= e((string) $row['weeks']) ?></td>
+                                <td><input type="text" name="gap_1" value="<?= e($row['gap_1']) ?>" form="vip-form-<?= e((string) $row['student_id']) ?>"></td>
+                                <td><input type="text" name="gap_2" value="<?= e($row['gap_2']) ?>" form="vip-form-<?= e((string) $row['student_id']) ?>"></td>
+                                <td>
+                                    <form method="post" class="inline-form" id="vip-form-<?= e((string) $row['student_id']) ?>">
+                                        <?= csrf_field() ?>
+                                        <input type="hidden" name="action" value="save_vip">
+                                        <input type="hidden" name="class_id" value="<?= e((string) $selectedClassId) ?>">
+                                        <input type="hidden" name="report_type" value="vip">
+                                        <input type="hidden" name="student_id" value="<?= e((string) $row['student_id']) ?>">
+                                        <button type="submit" class="primary-button"><?= e(__('save')) ?></button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
     <?php elseif ($classes !== [] && $matrix !== null && $selectedReportType === 'attendance' && $matrix['dates'] === []): ?>
         <p class="muted"><?= e(__('no_attendance')) ?></p>
     <?php elseif ($classes !== [] && $matrix !== null): ?>
@@ -221,7 +298,7 @@ render_page_start(__('reports'));
                     <?php if ($selectedReportType === 'exercises'): ?>
                         <?php foreach ($matrix['rows'] as $row): ?>
                             <tr>
-                                <td><?= e($row['student_label']) ?></td>
+                                <td><?= $renderVipToggle((int) $row['student_id'], isset($vipIds[(int) $row['student_id']])) ?> <?= e($row['student_label']) ?></td>
                                 <?php foreach ($matrix['cycles'] as $cycleNumber): ?>
                                     <td>
                                         <?php $cell = $row['cycles'][$cycleNumber] ?? null; ?>
@@ -242,7 +319,7 @@ render_page_start(__('reports'));
                     <?php else: ?>
                         <?php foreach ($matrix['rows'] as $row): ?>
                             <tr>
-                                <td><?= e($row['student_label']) ?></td>
+                                <td><?= $renderVipToggle((int) $row['student_id'], isset($vipIds[(int) $row['student_id']])) ?> <?= e($row['student_label']) ?></td>
                                 <?php foreach ($matrix['dates'] as $attendanceDate): ?>
                                     <?php $attendanceCell = $row['dates'][$attendanceDate] ?? ['label' => '0']; ?>
                                     <td><?= e((string) $attendanceCell['label']) ?></td>

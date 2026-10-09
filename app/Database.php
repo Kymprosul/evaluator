@@ -153,6 +153,17 @@ final class Database
                 FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
                 FOREIGN KEY(marked_by) REFERENCES users(id) ON DELETE SET NULL
             )',
+            'CREATE TABLE IF NOT EXISTS vip_students (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                class_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                gap_1 TEXT NULL,
+                gap_2 TEXT NULL,
+                UNIQUE(class_id, student_id),
+                FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
+            )',
             'CREATE TABLE IF NOT EXISTS imports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 class_id INTEGER NOT NULL,
@@ -246,6 +257,17 @@ final class Database
                 CONSTRAINT fk_attendance_class FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
                 CONSTRAINT fk_attendance_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
                 CONSTRAINT fk_attendance_marked_by FOREIGN KEY (marked_by) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
+            'CREATE TABLE IF NOT EXISTS vip_students (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                class_id INT UNSIGNED NOT NULL,
+                student_id INT UNSIGNED NOT NULL,
+                started_at DATETIME NOT NULL,
+                gap_1 TEXT NULL,
+                gap_2 TEXT NULL,
+                UNIQUE KEY uniq_vip_student (class_id, student_id),
+                CONSTRAINT fk_vip_class FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                CONSTRAINT fk_vip_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
             'CREATE TABLE IF NOT EXISTS imports (
                 id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

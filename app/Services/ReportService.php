@@ -158,6 +158,89 @@ final class ReportService
         return $html;
     }
 
+    public function setVip(int $classId, int $studentId, bool $vip, int $viewerUserId, bool $isAdmin): void
+    {
+        $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
+        $pdo = Database::connection();
+
+        if (!$vip) {
+            $pdo->prepare('DELETE FROM vip_students WHERE class_id = :class_id AND student_id = :student_id')
+                ->execute(['class_id' => $classId, 'student_id' => $studentId]);
+            return;
+        }
+
+        $studentIds = array_map(static fn(array $student): int => (int) $student['id'], $this->classes->studentsForClass($classId));
+        if (!in_array($studentId, $studentIds, true)) {
+            throw new RuntimeException('Alumno no válido.');
+        }
+
+        $exists = $pdo->prepare('SELECT 1 FROM vip_students WHERE class_id = :class_id AND student_id = :student_id');
+        $exists->execute(['class_id' => $classId, 'student_id' => $studentId]);
+        if ($exists->fetchColumn() !== false) {
+            return;
+        }
+
+        $pdo->prepare('INSERT INTO vip_students (class_id, student_id, started_at) VALUES (:class_id, :student_id, :started_at)')
+            ->execute(['class_id' => $classId, 'student_id' => $studentId, 'started_at' => date('Y-m-d H:i:s')]);
+    }
+
+    public function vipReport(int $classId, int $viewerUserId, bool $isAdmin): array
+    {
+        $classroom = $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
+
+        $statement = Database::connection()->prepare(
+            'SELECT v.student_id, v.started_at, v.gap_1, v.gap_2, s.student_code, s.display_name
+             FROM vip_students v
+             INNER JOIN students s ON s.id = v.student_id
+             WHERE v.class_id = :class_id
+             ORDER BY v.started_at ASC'
+        );
+        $statement->execute(['class_id' => $classId]);
+
+        $now = time();
+        $rows = array_map(static function (array $row) use ($now): array {
+            $started = strtotime((string) $row['started_at']) ?: $now;
+
+            return [
+                'student_id' => (int) $row['student_id'],
+                'student_label' => trim((string) ($row['display_name'] ?: $row['student_code'])),
+                'weeks' => intdiv(max(0, $now - $started), 7 * 86400),
+                'gap_1' => (string) ($row['gap_1'] ?? ''),
+                'gap_2' => (string) ($row['gap_2'] ?? ''),
+            ];
+        }, $statement->fetchAll(PDO::FETCH_ASSOC));
+
+        return [
+            'class' => $classroom,
+            'class_label' => $this->classes->label($classroom),
+            'rows' => $rows,
+        ];
+    }
+
+    public function saveVipGaps(int $classId, int $studentId, string $gap1, string $gap2, int $viewerUserId, bool $isAdmin): bool
+    {
+        $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
+        $gap1 = trim($gap1);
+        $gap2 = trim($gap2);
+        $pdo = Database::connection();
+
+        if ($gap1 !== '' && $gap2 !== '') {
+            $this->setVip($classId, $studentId, false, $viewerUserId, $isAdmin);
+            return true;
+        }
+
+        $pdo->prepare(
+            'UPDATE vip_students SET gap_1 = :gap_1, gap_2 = :gap_2 WHERE class_id = :class_id AND student_id = :student_id'
+        )->execute([
+            'gap_1' => $gap1 === '' ? null : $gap1,
+            'gap_2' => $gap2 === '' ? null : $gap2,
+            'class_id' => $classId,
+            'student_id' => $studentId,
+        ]);
+
+        return false;
+    }
+
     public function attendanceReportMatrix(int $classId, int $viewerUserId, bool $isAdmin): array
     {
         $classroom = $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
