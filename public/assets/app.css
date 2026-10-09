@@ -482,3 +482,53 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .vip-button.is-vip { color: #d4af37; }
 
 .vip-name { font-weight: 700; color: #b8860b; }
+
+/* ===== Responsive ===== */
+img, canvas, svg { max-width: 100%; }
+
+@media (min-width: 1400px) {
+	.page-shell, .page { width: min(1360px, calc(100% - 4rem)); }
+	.classroom-layout { grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr); }
+}
+
+@media (max-width: 980px) {
+	.topbar { position: static; gap: 0.5rem; padding: 0.8rem 1rem; }
+	.topbar .brand-block { flex-direction: row; }
+	.topbar .topnav { flex-direction: row; justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.2rem; }
+	.topbar .topnav a { white-space: nowrap; padding: 0.6rem 0.9rem; }
+	.topbar-meta { justify-content: space-between; flex-wrap: wrap; }
+	.page, .page-shell { width: calc(100% - 1.5rem); }
+	.page-heading, .section-heading { flex-direction: column; align-items: stretch; }
+	.badge-group { flex-wrap: wrap; }
+	.report-selector, .button-row { flex-wrap: wrap; }
+	.report-selector > *, .report-actions > * { flex: 1 1 200px; }
+	.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+	.data-table { min-width: 520px; }
+}
+
+@media (max-width: 640px) {
+	input, select, textarea { font-size: 16px; padding: 0.75rem 0.85rem; }
+	.page { padding: 1rem 0 2rem; }
+	.panel, .auth-card, .class-card, .form-card, .table-card, .roulette-panel { padding: 1rem; border-radius: 18px; }
+	h1 { font-size: 1.6rem; }
+	.card-grid, .settings-grid { grid-template-columns: 1fr; }
+	.class-card { min-height: 0; }
+	.stats-grid { gap: 0.5rem; }
+	.stats-grid div { padding: 0.7rem; }
+	.winner-display { font-size: clamp(1.8rem, 11vw, 3rem) !important; white-space: normal !important; width: 92%; }
+	.roulette-wrap canvas { width: 100%; }
+	.eval-button { min-height: 64px; }
+	.attendance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.attendance-student-button { padding: 0.8rem 0.5rem; font-size: 0.8rem; overflow-wrap: anywhere; }
+	.student-row { flex-wrap: wrap; }
+	.data-table th, .data-table td { padding: 0.6rem 0.5rem; }
+	.matrix-table th:first-child, .matrix-table td:first-child { position: sticky; left: 0; background: #fffaf2; z-index: 1; }
+	.cycle-header { flex-direction: row; justify-content: space-between; }
+	.toast-container { left: 0.75rem; right: 0.75rem; }
+	.lang-dropdown { right: auto !important; left: 0; }
+}
+
+@media (hover: none) {
+	.primary-button, .secondary-button, .danger-button, .ghost-button, .ghost-link, .topnav a { min-height: 44px; }
+	.vip-button { min-width: 36px; min-height: 36px; }
+}
