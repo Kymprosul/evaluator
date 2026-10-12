@@ -158,6 +158,7 @@ final class Database
                 class_id INTEGER NOT NULL,
                 student_id INTEGER NOT NULL,
                 started_at TEXT NOT NULL,
+                ended_at TEXT NULL,
                 gap_1 TEXT NULL,
                 gap_2 TEXT NULL,
                 UNIQUE(class_id, student_id),
@@ -263,6 +264,7 @@ final class Database
                 class_id INT UNSIGNED NOT NULL,
                 student_id INT UNSIGNED NOT NULL,
                 started_at DATETIME NOT NULL,
+                ended_at DATETIME NULL,
                 gap_1 TEXT NULL,
                 gap_2 TEXT NULL,
                 UNIQUE KEY uniq_vip_student (class_id, student_id),
@@ -304,6 +306,14 @@ final class Database
                 $driver === 'mysql'
                     ? 'ALTER TABLE classes ADD COLUMN owner_user_id INT UNSIGNED NULL'
                     : 'ALTER TABLE classes ADD COLUMN owner_user_id INTEGER NULL'
+            );
+        }
+
+        if (self::tableExists($pdo, 'vip_students', $driver) && !self::columnExists($pdo, 'vip_students', 'ended_at', $driver)) {
+            $pdo->exec(
+                $driver === 'mysql'
+                    ? 'ALTER TABLE vip_students ADD COLUMN ended_at DATETIME NULL'
+                    : 'ALTER TABLE vip_students ADD COLUMN ended_at TEXT NULL'
             );
         }
 

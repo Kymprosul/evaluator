@@ -293,7 +293,7 @@ final class EvaluationService
     {
         $statement = Database::connection()->prepare(
             'SELECT s.id, s.student_code, s.display_name,
-                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = cs.class_id AND v.student_id = s.id) AS is_vip
+                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = cs.class_id AND v.student_id = s.id AND v.ended_at IS NULL) AS is_vip
              FROM class_students cs
              INNER JOIN students s ON s.id = cs.student_id
              LEFT JOIN evaluations e
@@ -317,7 +317,7 @@ final class EvaluationService
     {
         $statement = Database::connection()->prepare(
             'SELECT e.id, e.score, e.selected_at, e.evaluated_at, s.id AS student_id, s.student_code, s.display_name,
-                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = e.class_id AND v.student_id = s.id) AS is_vip
+                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = e.class_id AND v.student_id = s.id AND v.ended_at IS NULL) AS is_vip
              FROM evaluations e
              INNER JOIN students s ON s.id = e.student_id
              WHERE e.class_id = :class_id

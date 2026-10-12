@@ -32,8 +32,8 @@ if (is_post()) {
             $completed = $reportService->saveVipGaps(
                 $selectedClassId,
                 (int) post_value('student_id', 0),
-                (string) post_value('gap_1', ''),
-                (string) post_value('gap_2', ''),
+                post_value('gap_1', '') === '1',
+                post_value('gap_2', '') === '1',
                 $currentUserId,
                 $isAdmin
             );
@@ -224,6 +224,8 @@ render_page_start(__('reports'));
                     <thead>
                         <tr>
                             <th><?= e(__('student')) ?></th>
+                            <th><?= e(__('vip_started')) ?></th>
+                            <th><?= e(__('vip_ended')) ?></th>
                             <th><?= e(__('vip_weeks')) ?></th>
                             <th><?= e(__('vip_gap')) ?> 1</th>
                             <th><?= e(__('vip_gap')) ?> 2</th>
@@ -233,10 +235,13 @@ render_page_start(__('reports'));
                     <tbody>
                         <?php foreach ($matrix['rows'] as $row): ?>
                             <tr>
-                                <td class="vip-name"><?= e($row['student_label']) ?></td>
+                                <td class="vip-name"><?= e($row['student_label']) ?><?= $row['active'] ? '' : ' <span class="muted">(' . e(__('vip_finished')) . ')</span>' ?></td>
+                                <td><?= e($row['started_date']) ?></td>
+                                <td><?= e($row['ended_date'] ?? '—') ?></td>
                                 <td><?= e((string) $row['weeks']) ?></td>
-                                <td><input type="text" name="gap_1" value="<?= e($row['gap_1']) ?>" form="vip-form-<?= e((string) $row['student_id']) ?>"></td>
-                                <td><input type="text" name="gap_2" value="<?= e($row['gap_2']) ?>" form="vip-form-<?= e((string) $row['student_id']) ?>"></td>
+                                <?php foreach ([1, 2] as $slot): ?>
+                                    <td><input type="checkbox" class="vip-circle" name="gap_<?= $slot ?>" value="1" <?= $row['gap_' . $slot] ? 'checked' : '' ?> <?= $row['active'] ? '' : 'disabled' ?> form="vip-form-<?= e((string) $row['student_id']) ?>"></td>
+                                <?php endforeach; ?>
                                 <td>
                                     <form method="post" class="inline-form" id="vip-form-<?= e((string) $row['student_id']) ?>">
                                         <?= csrf_field() ?>
@@ -244,7 +249,9 @@ render_page_start(__('reports'));
                                         <input type="hidden" name="class_id" value="<?= e((string) $selectedClassId) ?>">
                                         <input type="hidden" name="report_type" value="vip">
                                         <input type="hidden" name="student_id" value="<?= e((string) $row['student_id']) ?>">
-                                        <button type="submit" class="primary-button"><?= e(__('save')) ?></button>
+                                        <?php if ($row['active']): ?>
+                                            <button type="submit" class="primary-button"><?= e(__('save')) ?></button>
+                                        <?php endif; ?>
                                     </form>
                                 </td>
                             </tr>

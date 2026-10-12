@@ -532,3 +532,7 @@ img, canvas, svg { max-width: 100%; }
 	.primary-button, .secondary-button, .danger-button, .ghost-button, .ghost-link, .topnav a { min-height: 44px; }
 	.vip-button { min-width: 36px; min-height: 36px; }
 }
+
+.vip-circle { appearance: none; width: 22px; height: 22px; border: 2px solid #c9a227; border-radius: 50%; cursor: pointer; vertical-align: middle; }
+.vip-circle:checked { background: #c9a227; }
+.vip-circle:disabled { opacity: .5; cursor: default; }

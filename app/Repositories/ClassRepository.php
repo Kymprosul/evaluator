@@ -154,7 +154,7 @@ final class ClassRepository
     {
         $statement = Database::connection()->prepare(
             'SELECT s.id, s.student_code, s.display_name,
-                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = cs.class_id AND v.student_id = s.id) AS is_vip
+                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = cs.class_id AND v.student_id = s.id AND v.ended_at IS NULL) AS is_vip
              FROM class_students cs
              INNER JOIN students s ON s.id = cs.student_id
              WHERE cs.class_id = :class_id AND cs.is_active = 1
