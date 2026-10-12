@@ -17,7 +17,9 @@ require_once __DIR__ . '/Services/ImportService.php';
 require_once __DIR__ . '/Services/InviteService.php';
 require_once __DIR__ . '/Services/ReportService.php';
 
-App\Support\Env::load(APP_ROOT . '/.env');
+// Prefer .env inside the app root; fall back to the parent folder (outside the web root).
+$envFile = is_file(APP_ROOT . '/.env') ? APP_ROOT . '/.env' : dirname(APP_ROOT) . '/.env';
+App\Support\Env::load($envFile);
 
 $GLOBALS['app_config'] = require __DIR__ . '/config/app.php';
 
