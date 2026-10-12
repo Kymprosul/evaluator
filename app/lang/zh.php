@@ -76,4 +76,5 @@ return [
     'vip_weeks' => '周数',
     'vip_gap' => '空格',
     'no_vip' => '本班没有 VIP 学生。',
+    'upload_backup' => '上传备份',
 ];

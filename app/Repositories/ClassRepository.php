@@ -25,17 +25,17 @@ final class ClassRepository
         return $classes;
     }
 
-    public function allActive(int $viewerUserId, bool $isAdmin): array
+    public function allActive(int $viewerUserId, bool $isAdmin, bool $byCreation = false): array
     {
-        [$sql, $parameters] = $this->scopedClassQuery($viewerUserId, $isAdmin, true);
+        [$sql, $parameters] = $this->scopedClassQuery($viewerUserId, $isAdmin, true, $byCreation);
         $statement = Database::connection()->prepare($sql);
         $statement->execute($parameters);
         return $statement->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function allActiveWithStats(int $viewerUserId, bool $isAdmin): array
+    public function allActiveWithStats(int $viewerUserId, bool $isAdmin, bool $byCreation = false): array
     {
-        $classes = $this->allActive($viewerUserId, $isAdmin);
+        $classes = $this->allActive($viewerUserId, $isAdmin, $byCreation);
 
         foreach ($classes as &$classroom) {
             $classroom['students_count'] = $this->studentCount((int) $classroom['id']);
@@ -278,7 +278,7 @@ final class ClassRepository
         return $statement->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
-    private function scopedClassQuery(int $viewerUserId, bool $isAdmin, bool $onlyActive): array
+    private function scopedClassQuery(int $viewerUserId, bool $isAdmin, bool $onlyActive, bool $byCreation = false): array
     {
         $conditions = [];
         $parameters = [];
@@ -293,12 +293,13 @@ final class ClassRepository
         }
 
         $whereSql = $conditions === [] ? '' : ' WHERE ' . implode(' AND ', $conditions);
+        $orderSql = $byCreation ? 'c.created_at ASC, c.id ASC' : 'c.year DESC, c.term ASC, c.name ASC';
 
         return [
             'SELECT c.*, u.username AS owner_username
              FROM classes c
              LEFT JOIN users u ON u.id = c.owner_user_id' . $whereSql . '
-             ORDER BY c.year DESC, c.term ASC, c.name ASC',
+             ORDER BY ' . $orderSql,
             $parameters,
         ];
     }

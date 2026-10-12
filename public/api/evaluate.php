@@ -14,14 +14,15 @@ $score = (string) post_value('score', '');
 $currentUserId = (int) App\Auth::id();
 $isAdmin = App\Auth::isAdmin();
 
-try {
-    json_response([
-        'ok' => true,
-        'data' => $service->evaluate($classId, $evaluationId, $score, $currentUserId, $isAdmin),
-    ]);
-} catch (Throwable $exception) {
-    json_response([
-        'ok' => false,
-        'message' => $exception instanceof RuntimeException ? $exception->getMessage() : 'No se pudo guardar la evaluación.',
-    ], 422);
-}
+api_run(
+    fn(): array => $service->evaluate(
+        $classId,
+        $evaluationId,
+        $score,
+        $currentUserId,
+        $isAdmin,
+        post_token('spin_token'),
+        post_token('client_token')
+    ),
+    'No se pudo guardar la evaluación.'
+);

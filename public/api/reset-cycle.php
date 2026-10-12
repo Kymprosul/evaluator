@@ -12,14 +12,7 @@ $classId = (int) post_value('class_id', 0);
 $currentUserId = (int) App\Auth::id();
 $isAdmin = App\Auth::isAdmin();
 
-try {
-    json_response([
-        'ok' => true,
-        'data' => $service->resetCycle($classId, $currentUserId, $isAdmin),
-    ]);
-} catch (Throwable $exception) {
-    json_response([
-        'ok' => false,
-        'message' => $exception instanceof RuntimeException ? $exception->getMessage() : 'No se pudo crear una nueva ronda.',
-    ], 422);
-}
+api_run(
+    fn(): array => $service->resetCycle($classId, $currentUserId, $isAdmin, post_token('client_token')),
+    'No se pudo crear una nueva ronda.'
+);

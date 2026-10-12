@@ -60,6 +60,27 @@ final class Database
         return self::$connection;
     }
 
+    /**
+     * Runs $callback inside a transaction, or inside the already open one.
+     */
+    public static function transaction(callable $callback): mixed
+    {
+        $pdo = self::connection();
+        if ($pdo->inTransaction()) {
+            return $callback();
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $result = $callback();
+            $pdo->commit();
+            return $result;
+        } catch (\Throwable $exception) {
+            $pdo->rollBack();
+            throw $exception;
+        }
+    }
+
     public static function migrate(): void
     {
         $pdo = self::connection();
@@ -182,6 +203,16 @@ final class Database
                 FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY(accepted_user_id) REFERENCES users(id) ON DELETE SET NULL
             )',
+            'CREATE TABLE IF NOT EXISTS sync_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_token TEXT NOT NULL UNIQUE,
+                class_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                evaluation_id INTEGER NULL,
+                created_by INTEGER NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE
+            )',
         ];
     }
 
@@ -287,6 +318,16 @@ final class Database
                 accepted_at DATETIME NULL,
                 CONSTRAINT fk_user_invites_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
                 CONSTRAINT fk_user_invites_accepted_user FOREIGN KEY (accepted_user_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
+            'CREATE TABLE IF NOT EXISTS sync_actions (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                client_token VARCHAR(80) NOT NULL UNIQUE,
+                class_id INT UNSIGNED NOT NULL,
+                action_type VARCHAR(20) NOT NULL,
+                evaluation_id INT UNSIGNED NULL,
+                created_by INT UNSIGNED NULL,
+                created_at DATETIME NOT NULL,
+                CONSTRAINT fk_sync_actions_class FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
         ];
     }

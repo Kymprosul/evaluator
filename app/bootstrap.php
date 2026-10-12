@@ -16,6 +16,7 @@ require_once __DIR__ . '/Services/EvaluationService.php';
 require_once __DIR__ . '/Services/ImportService.php';
 require_once __DIR__ . '/Services/InviteService.php';
 require_once __DIR__ . '/Services/ReportService.php';
+require_once __DIR__ . '/Services/BackupService.php';
 
 // Prefer .env inside the app root; fall back to the parent folder (outside the web root).
 $envFile = is_file(APP_ROOT . '/.env') ? APP_ROOT . '/.env' : dirname(APP_ROOT) . '/.env';

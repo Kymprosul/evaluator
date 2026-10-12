@@ -42,6 +42,21 @@ render_page_start(__('classroom'));
 
 <?php render_flash_messages(); ?>
 
+<div id="sync-banner" class="sync-banner" role="alert" hidden>
+    <p id="sync-banner-text"></p>
+    <div class="sync-banner-actions">
+        <button type="button" class="secondary-button" data-sync-retry>Reintentar</button>
+        <button type="button" class="primary-button" data-sync-backup>Descargar respaldo</button>
+        <a class="ghost-link" href="<?= e(app_url('backup.php')) ?>"><?= e(__('upload_backup')) ?></a>
+    </div>
+</div>
+
+<div id="sync-conflicts" class="sync-conflicts" role="status" hidden>
+    <p><strong>Algunas acciones no se pudieron guardar:</strong></p>
+    <ul id="sync-conflicts-list"></ul>
+    <button type="button" id="sync-conflicts-clear" class="secondary-button">Entendido</button>
+</div>
+
 <section
     id="classroom-app"
     class="classroom-layout"
@@ -50,6 +65,7 @@ render_page_start(__('classroom'));
     data-evaluate-url="<?= e(app_url('api/evaluate.php')) ?>"
     data-reset-url="<?= e(app_url('api/reset-cycle.php')) ?>"
     data-attendance-url="<?= e(app_url('api/attendance.php')) ?>"
+    data-state-url="<?= e(app_url('api/state.php')) ?>"
 >
     <div class="roulette-panel">
         <div id="roulette-container" class="roulette-wrap">
@@ -67,7 +83,6 @@ render_page_start(__('classroom'));
             <span id="eval-score-indicator" class="sync-dot synced" title="Sync status"></span>
         </div>
         <div id="classroom-feedback" class="feedback-message"></div>
-        <button id="eval-retry-btn" style="display:none" class="secondary-button">Reintentar sync</button>
     </div>
 
     <aside class="sidebar-panel">
@@ -109,9 +124,13 @@ render_page_start(__('classroom'));
 </section>
 
 <section class="info-card attendance-board">
-    <h2><?= e(__('attendance')) ?> <span id="attendance-date" class="attendance-date"></span> <span id="sync-indicator" title="Sync status"></span></h2>
-    <div id="attendance-students" class="attendance-grid"></div>
-    <button id="retry-sync-btn" style="display:none" class="secondary-button">Reintentar</button>
+    <div class="attendance-heading">
+        <h2><?= e(__('attendance')) ?> <span id="attendance-date" class="attendance-date"></span> <span id="sync-indicator" class="sync-dot synced" title="Sync status"></span></h2>
+        <span id="attendance-status" class="attendance-status"></span>
+        <button type="button" id="attendance-start" class="primary-button">Pasar lista</button>
+        <button type="button" id="attendance-finish" class="primary-button" hidden>Terminar</button>
+    </div>
+    <div id="attendance-students" class="attendance-grid is-locked"></div>
 </section>
 
 <?php $classroomJsVersion = is_file(__DIR__ . '/assets/classroom.js') ? (string) filemtime(__DIR__ . '/assets/classroom.js') : '1'; ?>

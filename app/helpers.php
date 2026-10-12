@@ -149,6 +149,35 @@ function json_response(array $payload, int $status = 200): never
     exit;
 }
 
+/**
+ * Runs an API handler and maps the outcome to the status codes the browser sync relies on:
+ * 200 done, 422 rejected by business rules (the browser drops the action), 500 retry later.
+ */
+function api_run(callable $handler, string $fallbackMessage): never
+{
+    header('Cache-Control: no-store');
+
+    try {
+        $data = $handler();
+    } catch (PDOException $exception) {
+        error_log('[api] ' . $exception->getMessage());
+        json_response(['ok' => false, 'message' => $fallbackMessage], 500);
+    } catch (RuntimeException $exception) {
+        json_response(['ok' => false, 'rejected' => true, 'message' => $exception->getMessage()], 422);
+    } catch (Throwable $exception) {
+        error_log('[api] ' . $exception->getMessage());
+        json_response(['ok' => false, 'message' => $fallbackMessage], 500);
+    }
+
+    json_response(['ok' => true, 'data' => $data]);
+}
+
+function post_token(string $key): ?string
+{
+    $value = trim((string) post_value($key, ''));
+    return $value === '' ? null : $value;
+}
+
 function nav_is_active(string $path): bool
 {
     return str_ends_with(current_path(), $path);

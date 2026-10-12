@@ -7,8 +7,8 @@ namespace App\Services;
 use App\Database;
 use App\Repositories\ClassRepository;
 use PDO;
+use PDOException;
 use RuntimeException;
-use Throwable;
 
 final class EvaluationService
 {
@@ -57,25 +57,36 @@ final class EvaluationService
         ];
     }
 
-    public function saveAttendance(int $classId, array $presentStudentIds, ?string $clientAttendanceDate, int $userId, bool $isAdmin): array
-    {
+    /**
+     * Replaces the attendance of one day. $attendanceDate may be a past day (offline backups).
+     * With $clientTimestamp set, the save is skipped when the server already holds a newer version.
+     */
+    public function saveAttendance(
+        int $classId,
+        array $presentStudentIds,
+        ?string $attendanceDate,
+        int $userId,
+        bool $isAdmin,
+        ?int $clientTimestamp = null
+    ): array {
         $classroom = $this->accessibleClassroom($classId, $userId, $isAdmin);
-        $attendanceDate = date('Y-m-d');
+        $attendanceDate = $this->normalizeAttendanceDate($attendanceDate);
         $students = $this->classes->studentsForClass($classId);
         $allowedStudentIds = array_values(array_map(
             static fn(array $student): int => (int) $student['id'],
             array_filter($students, static fn(array $student): bool => empty($student['is_vip']))
         ));
 
-        if ($clientAttendanceDate !== null && $clientAttendanceDate !== '' && $clientAttendanceDate !== $attendanceDate) {
-            return [
-                'message' => 'Ha cambiado el día. Se ha reiniciado el tablero de asistencia.',
-                'state' => $this->state($classId, $userId, $isAdmin),
-                'date_changed' => true,
-                'class' => [
-                    'id' => (int) $classroom['id'],
-                ],
-            ];
+        if ($clientTimestamp !== null) {
+            $latest = $this->latestAttendanceMark($classId, $attendanceDate);
+            if ($latest !== null && strtotime($latest) > intdiv($clientTimestamp, 1000)) {
+                return [
+                    'message' => 'El servidor ya tiene una versión más reciente de esa asistencia.',
+                    'skipped' => true,
+                    'date' => $attendanceDate,
+                    'state' => $this->state($classId, $userId, $isAdmin),
+                ];
+            }
         }
 
         $normalized = array_values(array_unique(array_map(static fn(mixed $id): int => (int) $id, $presentStudentIds)));
@@ -84,10 +95,8 @@ final class EvaluationService
             static fn(int $id): bool => in_array($id, $allowedStudentIds, true)
         ));
 
-        $pdo = Database::connection();
-        $pdo->beginTransaction();
-
-        try {
+        Database::transaction(function () use ($classId, $attendanceDate, $allowedStudentIds, $filtered, $userId): void {
+            $pdo = Database::connection();
             $delete = $pdo->prepare(
                 'DELETE FROM attendance_records WHERE class_id = :class_id AND attendance_date = :attendance_date'
             );
@@ -111,15 +120,12 @@ final class EvaluationService
                     'marked_at' => date('Y-m-d H:i:s'),
                 ]);
             }
-
-            $pdo->commit();
-        } catch (Throwable $exception) {
-            $pdo->rollBack();
-            throw $exception;
-        }
+        });
 
         return [
             'message' => 'Asistencia guardada.',
+            'date' => $attendanceDate,
+            'present_count' => count($filtered),
             'state' => $this->state($classId, $userId, $isAdmin),
             'class' => [
                 'id' => (int) $classroom['id'],
@@ -127,132 +133,322 @@ final class EvaluationService
         ];
     }
 
-    public function spin(int $classId, int $viewerUserId, bool $isAdmin, ?int $requestedStudentId = null): array
+    public function spin(int $classId, int $viewerUserId, bool $isAdmin, ?int $requestedStudentId = null, ?string $clientToken = null): array
     {
         $classroom = $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
-        $cycle = $this->currentCycle($classId);
-        if ($cycle['status'] !== 'open') {
-            throw new RuntimeException('La ronda actual ya está completa. Reinicia para empezar otra.');
-        }
 
-        if ($this->pendingEvaluation($classId, (int) $cycle['id']) !== null) {
-            throw new RuntimeException('Debes evaluar al alumno actual antes de volver a girar.');
-        }
-
-        $students = $this->remainingStudents($classId, (int) $cycle['id']);
-        if ($students === []) {
-            $this->markCycleCompleted((int) $cycle['id']);
-            throw new RuntimeException('No quedan alumnos en esta ronda. Reinicia la clase para comenzar otra.');
-        }
-
-        // Use requested student if valid, otherwise random
-        $selectedStudent = null;
-        if ($requestedStudentId !== null) {
-            foreach ($students as $student) {
-                if ((int) $student['id'] === $requestedStudentId) {
-                    $selectedStudent = $student;
-                    break;
-                }
+        return Database::transaction(function () use ($classId, $classroom, $viewerUserId, $requestedStudentId, $clientToken): array {
+            $previous = $this->claimClientToken($clientToken, $classId, 'spin', $viewerUserId);
+            if ($previous !== null) {
+                $evaluation = $previous['evaluation_id'] === null ? null : $this->evaluationById((int) $previous['evaluation_id']);
+                return [
+                    'message' => 'Sorteo ya registrado.',
+                    'replayed' => true,
+                    'selected' => $evaluation === null ? null : $this->formatEvaluation($evaluation),
+                    'state' => $this->runtimeState($classId, $classroom, $this->currentCycle($classId)),
+                ];
             }
-        }
-        if ($selectedStudent === null) {
-            $selectedStudent = $students[random_int(0, count($students) - 1)];
-        }
-        $statement = Database::connection()->prepare(
-            'INSERT INTO evaluations (class_id, student_id, cycle_id, score, selected_at, evaluated_by, evaluated_at)
-             VALUES (:class_id, :student_id, :cycle_id, :score, :selected_at, :evaluated_by, :evaluated_at)'
-        );
-        $statement->execute([
-            'class_id' => $classId,
-            'student_id' => (int) $selectedStudent['id'],
-            'cycle_id' => (int) $cycle['id'],
-            'score' => null,
-            'selected_at' => date('Y-m-d H:i:s'),
-            'evaluated_by' => null,
-            'evaluated_at' => null,
-        ]);
 
-        if ($this->remainingStudents($classId, (int) $cycle['id']) === []) {
-            $this->markCycleCompleted((int) $cycle['id']);
-            $cycle = $this->fetchCycle((int) $cycle['id']);
-        }
+            $cycle = $this->currentCycle($classId);
+            if ($cycle['status'] !== 'open') {
+                throw new RuntimeException('La ronda actual ya está completa. Reinicia para empezar otra.');
+            }
 
-        $evaluation = $this->pendingEvaluation($classId, (int) $cycle['id']);
-        if ($evaluation === null) {
-            throw new RuntimeException('No se pudo registrar el sorteo.');
-        }
+            if ($this->pendingEvaluation($classId, (int) $cycle['id']) !== null) {
+                throw new RuntimeException('Debes evaluar al alumno actual antes de volver a girar.');
+            }
 
-        return [
-            'message' => 'Alumno seleccionado.',
-            'selected' => $this->formatEvaluation($evaluation),
-            'state' => $this->runtimeState($classId, $classroom, $cycle),
-        ];
+            $students = $this->remainingStudents($classId, (int) $cycle['id']);
+            if ($students === []) {
+                $this->markCycleCompleted((int) $cycle['id']);
+                throw new RuntimeException('No quedan alumnos en esta ronda. Reinicia la clase para comenzar otra.');
+            }
+
+            $selectedStudent = null;
+            if ($requestedStudentId !== null) {
+                foreach ($students as $student) {
+                    if ((int) $student['id'] === $requestedStudentId) {
+                        $selectedStudent = $student;
+                        break;
+                    }
+                }
+
+                // Never swap silently to another student: the browser already showed this one.
+                if ($selectedStudent === null) {
+                    throw new RuntimeException('Ese alumno ya no está pendiente en esta ronda.');
+                }
+            } else {
+                $selectedStudent = $students[random_int(0, count($students) - 1)];
+            }
+
+            $statement = Database::connection()->prepare(
+                'INSERT INTO evaluations (class_id, student_id, cycle_id, score, selected_at, evaluated_by, evaluated_at)
+                 VALUES (:class_id, :student_id, :cycle_id, :score, :selected_at, :evaluated_by, :evaluated_at)'
+            );
+            $statement->execute([
+                'class_id' => $classId,
+                'student_id' => (int) $selectedStudent['id'],
+                'cycle_id' => (int) $cycle['id'],
+                'score' => null,
+                'selected_at' => date('Y-m-d H:i:s'),
+                'evaluated_by' => null,
+                'evaluated_at' => null,
+            ]);
+
+            if ($this->remainingStudents($classId, (int) $cycle['id']) === []) {
+                $this->markCycleCompleted((int) $cycle['id']);
+                $cycle = $this->fetchCycle((int) $cycle['id']);
+            }
+
+            $evaluation = $this->pendingEvaluation($classId, (int) $cycle['id']);
+            if ($evaluation === null) {
+                throw new RuntimeException('No se pudo registrar el sorteo.');
+            }
+
+            $this->recordClientTokenEvaluation($clientToken, (int) $evaluation['id']);
+
+            return [
+                'message' => 'Alumno seleccionado.',
+                'selected' => $this->formatEvaluation($evaluation),
+                'state' => $this->runtimeState($classId, $classroom, $cycle),
+            ];
+        });
     }
 
-    public function evaluate(int $classId, int $evaluationId, string $score, int $userId, bool $isAdmin): array
-    {
+    /**
+     * Scores an evaluation, identified by its id or by the client token of the spin that created it.
+     */
+    public function evaluate(
+        int $classId,
+        int $evaluationId,
+        string $score,
+        int $userId,
+        bool $isAdmin,
+        ?string $spinToken = null,
+        ?string $clientToken = null
+    ): array {
         $classroom = $this->accessibleClassroom($classId, $userId, $isAdmin);
         if (!in_array($score, ['+', '=', '-'], true)) {
             throw new RuntimeException('La calificación no es válida.');
         }
 
-        $statement = Database::connection()->prepare(
-            'UPDATE evaluations
-             SET score = :score, evaluated_by = :evaluated_by, evaluated_at = :evaluated_at
-             WHERE id = :id AND class_id = :class_id'
-        );
-        $statement->execute([
-            'score' => $score,
-            'evaluated_by' => $userId,
-            'evaluated_at' => date('Y-m-d H:i:s'),
-            'id' => $evaluationId,
-            'class_id' => $classId,
-        ]);
+        return Database::transaction(function () use ($classId, $classroom, $evaluationId, $score, $userId, $spinToken, $clientToken): array {
+            $previous = $this->claimClientToken($clientToken, $classId, 'evaluate', $userId);
+            if ($previous !== null) {
+                return [
+                    'message' => 'Evaluación ya registrada.',
+                    'replayed' => true,
+                    'state' => $this->runtimeState($classId, $classroom, $this->currentCycle($classId)),
+                ];
+            }
 
-        if ($statement->rowCount() === 0) {
-            throw new RuntimeException('No se pudo registrar la evaluación.');
-        }
+            $spinEvaluationId = $spinToken === null || $spinToken === '' ? null : $this->evaluationIdForSpinToken($classId, $spinToken);
+            if ($spinEvaluationId !== null) {
+                $evaluationId = $spinEvaluationId;
+            } elseif ($evaluationId <= 0) {
+                throw new RuntimeException('El sorteo de esta evaluación no llegó al servidor.');
+            }
 
-        $cycleId = $this->cycleIdByEvaluation($evaluationId);
-        if ($cycleId !== null && $this->remainingStudents($classId, $cycleId) === [] && $this->pendingEvaluation($classId, $cycleId) === null) {
-            $this->markCycleCompleted($cycleId);
-            $completedCycle = $this->fetchCycle($cycleId);
-            $this->createNextCycle($classId, (int) $completedCycle['cycle_number']);
+            $evaluation = $this->evaluationById($evaluationId);
+            if ($evaluation === null || (int) $evaluation['class_id'] !== $classId) {
+                throw new RuntimeException('No se encontró la evaluación.');
+            }
 
-            $nextCycle = $this->currentCycle($classId);
+            $statement = Database::connection()->prepare(
+                'UPDATE evaluations
+                 SET score = :score, evaluated_by = :evaluated_by, evaluated_at = :evaluated_at
+                 WHERE id = :id AND class_id = :class_id'
+            );
+            $statement->execute([
+                'score' => $score,
+                'evaluated_by' => $userId,
+                'evaluated_at' => date('Y-m-d H:i:s'),
+                'id' => $evaluationId,
+                'class_id' => $classId,
+            ]);
+
+            $this->recordClientTokenEvaluation($clientToken, $evaluationId);
+
+            $cycleId = (int) $evaluation['cycle_id'];
+            $latestCycle = $this->currentCycle($classId);
+            $isLatestCycle = (int) $latestCycle['id'] === $cycleId;
+
+            if ($isLatestCycle && $this->remainingStudents($classId, $cycleId) === [] && $this->pendingEvaluation($classId, $cycleId) === null) {
+                $this->markCycleCompleted($cycleId);
+                $this->createNextCycle($classId, (int) $latestCycle['cycle_number']);
+
+                return [
+                    'message' => 'Evaluación guardada. Nueva ronda creada automáticamente.',
+                    'state' => $this->runtimeState($classId, $classroom, $this->currentCycle($classId)),
+                ];
+            }
 
             return [
-                'message' => 'Evaluación guardada. Nueva ronda creada automáticamente.',
-                'state' => $this->runtimeState($classId, $classroom, $nextCycle),
+                'message' => 'Evaluación guardada.',
+                'state' => $this->runtimeState($classId, $classroom, $this->currentCycle($classId)),
             ];
-        }
-
-        $activeCycle = $cycleId === null ? $this->currentCycle($classId) : $this->fetchCycle($cycleId);
-
-        return [
-            'message' => 'Evaluación guardada.',
-            'state' => $this->runtimeState($classId, $classroom, $activeCycle),
-        ];
+        });
     }
 
-    public function resetCycle(int $classId, int $viewerUserId, bool $isAdmin): array
+    public function resetCycle(int $classId, int $viewerUserId, bool $isAdmin, ?string $clientToken = null): array
     {
         $this->accessibleClassroom($classId, $viewerUserId, $isAdmin);
-        $cycle = $this->currentCycle($classId);
-        if ($this->pendingEvaluation($classId, (int) $cycle['id']) !== null) {
-            throw new RuntimeException('Evalúa al alumno actual antes de reiniciar la ronda.');
+
+        return Database::transaction(function () use ($classId, $viewerUserId, $isAdmin, $clientToken): array {
+            $previous = $this->claimClientToken($clientToken, $classId, 'reset', $viewerUserId);
+            if ($previous !== null) {
+                return [
+                    'message' => 'Nueva ronda ya registrada.',
+                    'replayed' => true,
+                    'state' => $this->state($classId, $viewerUserId, $isAdmin),
+                ];
+            }
+
+            $cycle = $this->currentCycle($classId);
+            if ($this->pendingEvaluation($classId, (int) $cycle['id']) !== null) {
+                throw new RuntimeException('Evalúa al alumno actual antes de reiniciar la ronda.');
+            }
+
+            if ($cycle['status'] !== 'completed') {
+                $this->markCycleCompleted((int) $cycle['id']);
+            }
+
+            $this->createNextCycle($classId, (int) $cycle['cycle_number']);
+
+            return [
+                'message' => 'Nueva ronda creada.',
+                'state' => $this->state($classId, $viewerUserId, $isAdmin),
+            ];
+        });
+    }
+
+    /**
+     * Registers a client token so a retried request is not applied twice.
+     * Returns the earlier row when the token was already used, null when it is new (or absent).
+     */
+    private function claimClientToken(?string $clientToken, int $classId, string $type, int $userId): ?array
+    {
+        if ($clientToken === null || $clientToken === '') {
+            return null;
         }
 
-        if ($cycle['status'] !== 'completed') {
-            $this->markCycleCompleted((int) $cycle['id']);
+        if (strlen($clientToken) > 80 || preg_match('/^[A-Za-z0-9_-]+$/', $clientToken) !== 1) {
+            throw new RuntimeException('Identificador de acción no válido.');
         }
 
-        $this->createNextCycle($classId, (int) $cycle['cycle_number']);
+        $existing = $this->findClientToken($clientToken);
+        if ($existing === null) {
+            try {
+                $statement = Database::connection()->prepare(
+                    'INSERT INTO sync_actions (client_token, class_id, action_type, evaluation_id, created_by, created_at)
+                     VALUES (:client_token, :class_id, :action_type, NULL, :created_by, :created_at)'
+                );
+                $statement->execute([
+                    'client_token' => $clientToken,
+                    'class_id' => $classId,
+                    'action_type' => $type,
+                    'created_by' => $userId,
+                    'created_at' => date('Y-m-d H:i:s'),
+                ]);
+                return null;
+            } catch (PDOException $exception) {
+                // A concurrent retry claimed it first.
+                if ((string) $exception->getCode() !== '23000') {
+                    throw $exception;
+                }
+                $existing = $this->findClientToken($clientToken);
+            }
+        }
 
-        return [
-            'message' => 'Nueva ronda creada.',
-            'state' => $this->state($classId, $viewerUserId, $isAdmin),
-        ];
+        if ($existing === null || (int) $existing['class_id'] !== $classId || $existing['action_type'] !== $type) {
+            throw new RuntimeException('Identificador de acción no válido.');
+        }
+
+        return $existing;
+    }
+
+    private function findClientToken(string $clientToken): ?array
+    {
+        $statement = Database::connection()->prepare('SELECT * FROM sync_actions WHERE client_token = :client_token LIMIT 1');
+        $statement->execute(['client_token' => $clientToken]);
+        return $statement->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    private function recordClientTokenEvaluation(?string $clientToken, int $evaluationId): void
+    {
+        if ($clientToken === null || $clientToken === '') {
+            return;
+        }
+
+        $statement = Database::connection()->prepare(
+            'UPDATE sync_actions SET evaluation_id = :evaluation_id WHERE client_token = :client_token'
+        );
+        $statement->execute([
+            'evaluation_id' => $evaluationId,
+            'client_token' => $clientToken,
+        ]);
+    }
+
+    private function evaluationIdForSpinToken(int $classId, string $spinToken): ?int
+    {
+        $statement = Database::connection()->prepare(
+            "SELECT evaluation_id FROM sync_actions
+             WHERE client_token = :client_token AND class_id = :class_id AND action_type = 'spin'
+             LIMIT 1"
+        );
+        $statement->execute([
+            'client_token' => $spinToken,
+            'class_id' => $classId,
+        ]);
+        $evaluationId = $statement->fetchColumn();
+        return $evaluationId === false || $evaluationId === null ? null : (int) $evaluationId;
+    }
+
+    private function evaluationById(int $evaluationId): ?array
+    {
+        $statement = Database::connection()->prepare(
+            'SELECT e.id, e.class_id, e.cycle_id, e.score, e.selected_at, e.evaluated_at, s.id AS student_id, s.student_code, s.display_name,
+                    EXISTS(SELECT 1 FROM vip_students v WHERE v.class_id = e.class_id AND v.student_id = s.id AND v.ended_at IS NULL) AS is_vip
+             FROM evaluations e
+             INNER JOIN students s ON s.id = e.student_id
+             WHERE e.id = :id
+             LIMIT 1'
+        );
+        $statement->execute(['id' => $evaluationId]);
+        return $statement->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    private function normalizeAttendanceDate(?string $attendanceDate): string
+    {
+        $today = date('Y-m-d');
+        if ($attendanceDate === null || $attendanceDate === '') {
+            return $today;
+        }
+
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $attendanceDate);
+        if ($parsed === false || $parsed->format('Y-m-d') !== $attendanceDate) {
+            throw new RuntimeException('La fecha de asistencia no es válida.');
+        }
+
+        // One day of margin for timezone differences between browser and server.
+        if ($attendanceDate > date('Y-m-d', strtotime('+1 day'))) {
+            throw new RuntimeException('La fecha de asistencia está en el futuro.');
+        }
+
+        return $attendanceDate;
+    }
+
+    private function latestAttendanceMark(int $classId, string $attendanceDate): ?string
+    {
+        $statement = Database::connection()->prepare(
+            'SELECT MAX(marked_at) FROM attendance_records WHERE class_id = :class_id AND attendance_date = :attendance_date'
+        );
+        $statement->execute([
+            'class_id' => $classId,
+            'attendance_date' => $attendanceDate,
+        ]);
+        $latest = $statement->fetchColumn();
+        return $latest === false || $latest === null ? null : (string) $latest;
     }
 
     private function currentCycle(int $classId): array
@@ -484,6 +680,7 @@ final class EvaluationService
             'date' => $attendanceDate,
             'students' => array_map([$this, 'formatStudent'], $students),
             'present_student_ids' => $this->presentStudentIdsByDate($classId, $attendanceDate),
+            'taken' => $this->latestAttendanceMark($classId, $attendanceDate) !== null,
         ];
     }
 

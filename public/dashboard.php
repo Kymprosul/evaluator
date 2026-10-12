@@ -11,8 +11,8 @@ $currentUserId = (int) $user['id'];
 $isAdmin = !empty($user['is_admin']);
 
 $repository = new App\Repositories\ClassRepository();
-// For the main dashboard, we only show the user's own classes
-$myClasses = $repository->allActiveWithStats($currentUserId, false);
+// For the main dashboard, we only show the user's own classes, in the order they were created
+$myClasses = $repository->allActiveWithStats($currentUserId, false, true);
 
 render_page_start(__('dashboard'));
 ?>
@@ -21,7 +21,10 @@ render_page_start(__('dashboard'));
         <span class="eyebrow"><?= e(__('dashboard')) ?></span>
         <h1><?= e(__('admin_classes')) ?></h1>
     </div>
-    <a class="secondary-button" href="<?= e(app_url('settings.php')) ?>"><?= e(__('settings')) ?></a>
+    <div class="badge-group">
+        <a class="ghost-link" href="<?= e(app_url('backup.php')) ?>"><?= e(__('upload_backup')) ?></a>
+        <a class="secondary-button" href="<?= e(app_url('settings.php')) ?>"><?= e(__('settings')) ?></a>
+    </div>
 </section>
 
 <?php render_flash_messages(); ?>

@@ -76,4 +76,5 @@ return [
     'vip_weeks' => 'Weeks',
     'vip_gap' => 'Slot',
     'no_vip' => 'There are no VIP students in this class.',
+    'upload_backup' => 'Upload backup',
 ];

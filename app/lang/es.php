@@ -76,4 +76,5 @@ return [
     'vip_weeks' => 'Semanas',
     'vip_gap' => 'Hueco',
     'no_vip' => 'No hay alumnos VIP en esta clase.',
+    'upload_backup' => 'Subir respaldo',
 ];

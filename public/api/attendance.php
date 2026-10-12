@@ -18,16 +18,7 @@ if (!is_array($presentStudentIds)) {
     $presentStudentIds = [];
 }
 
-try {
-    header('Cache-Control: no-store');
-    json_response([
-        'ok' => true,
-        'data' => $service->saveAttendance($classId, $presentStudentIds, $attendanceDate, $currentUserId, $isAdmin),
-    ]);
-} catch (Throwable $exception) {
-    header('Cache-Control: no-store');
-    json_response([
-        'ok' => false,
-        'message' => $exception instanceof RuntimeException ? $exception->getMessage() : 'No se pudo guardar la asistencia.',
-    ], 422);
-}
+api_run(
+    fn(): array => $service->saveAttendance($classId, $presentStudentIds, $attendanceDate, $currentUserId, $isAdmin),
+    'No se pudo guardar la asistencia.'
+);

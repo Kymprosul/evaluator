@@ -1,7 +1,6 @@
 const app = document.getElementById("classroom-app");
 
 if (app) {
-    const rouletteContainer = document.getElementById("roulette-container");
     const canvas = document.getElementById("roulette-canvas");
     const context = canvas.getContext("2d");
     const winnerDisplay = document.getElementById("winner-display");
@@ -15,703 +14,697 @@ if (app) {
     const evaluatedElement = document.getElementById("stat-evaluated");
     const evaluationButtons = Array.from(document.querySelectorAll(".eval-button"));
     const attendanceContainer = document.getElementById("attendance-students");
+    const attendanceStartButton = document.getElementById("attendance-start");
+    const attendanceFinishButton = document.getElementById("attendance-finish");
+    const attendanceStatus = document.getElementById("attendance-status");
+    const syncBanner = document.getElementById("sync-banner");
+    const syncBannerText = document.getElementById("sync-banner-text");
+    const conflictBox = document.getElementById("sync-conflicts");
+    const conflictList = document.getElementById("sync-conflicts-list");
 
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
+    let csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
     const spinUrl = app.dataset.spinUrl;
     const evaluateUrl = app.dataset.evaluateUrl;
     const resetUrl = app.dataset.resetUrl;
     const attendanceUrl = app.dataset.attendanceUrl;
+    const stateUrl = app.dataset.stateUrl;
 
-    let state = JSON.parse(app.dataset.initialState);
+    // serverState is the last state the server confirmed; state is serverState with the
+    // actions still waiting in the queue applied on top, which is what the screen shows.
+    let serverState = JSON.parse(app.dataset.initialState);
+    let state = serverState;
+    const classId = serverState.class.id;
+
     let rotation = 0;
     let isAnimating = false;
     let pendingSpinFrame = null;
     let pendingSpinStart = 0;
-    let lastWinnerLabel = state.pending_evaluation?.student?.label || "";
-    let selectedAttendance = new Set(state.attendance?.present_student_ids || []);
-    let currentAttendanceDate = state.attendance?.date || "";
+    let lastWinnerLabel = serverState.pending_evaluation?.student?.label || "";
     let attendanceAudioContext = null;
 
     // ============================================================
-    // AttendanceSync module — auto-save attendance with offline support
+    // Storage — localStorage can be full or disabled; callers keep an in-memory copy
     // ============================================================
-    const AttendanceSync = (function () {
-        const MAX_RETRIES = 3;
-        const BACKOFF_MS = [2000, 4000, 8000];
-        const IDLE_TIMEOUT = 2500;
-        const MAX_DAYS = 7;
-
-        let idleTimer = null;
-        let retryCount = 0;
-        let isSyncing = false;
-
-        function getIndicator() {
-            return document.getElementById("sync-indicator");
-        }
-
-        function getRetryBtn() {
-            return document.getElementById("retry-sync-btn");
-        }
-
-        function setIndicatorState(state) {
-            const el = getIndicator();
-            if (!el) return;
-            el.className = "";
-            if (state === "pending") el.classList.add("pending");
-            else if (state === "synced") el.classList.add("synced");
-            else if (state === "error") el.classList.add("error");
-        }
-
-        function showRetryBtn(show) {
-            const btn = getRetryBtn();
-            if (btn) {
-                btn.style.display = show ? "inline-block" : "none";
-            }
-        }
-
-        function todayStr() {
-            return new Date().toISOString().slice(0, 10);
-        }
-
-        function storageKey(classId, date) {
-            return "eval_attendance_" + classId + "_" + date;
-        }
-
-        function readLocal(classId, date) {
+    const Store = {
+        get(key, fallback) {
             try {
-                const raw = localStorage.getItem(storageKey(classId, date));
-                if (!raw) return null;
-                return JSON.parse(raw);
+                const raw = localStorage.getItem(key);
+                return raw ? JSON.parse(raw) : fallback;
             } catch {
-                return null;
+                return fallback;
             }
-        }
-
-        function writeLocal(classId, date, ids, synced) {
+        },
+        set(key, value) {
             try {
-                const data = { ids: Array.from(ids), synced: synced || false, ts: Date.now() };
-                localStorage.setItem(storageKey(classId, date), JSON.stringify(data));
+                localStorage.setItem(key, JSON.stringify(value));
             } catch {
-                // localStorage full or disabled — silently ignore
+                // Kept in memory only.
             }
-        }
-
-        function cleanupOldKeys(classId) {
-            const today = todayStr();
-            const toDelete = [];
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (key && key.startsWith("eval_attendance_" + classId + "_")) {
-                    const datePart = key.replace("eval_attendance_" + classId + "_", "");
-                    if (datePart !== today) {
-                        // Check if older than MAX_DAYS
-                        const diff = Math.floor((new Date(today) - new Date(datePart)) / 86400000);
-                        if (diff > MAX_DAYS) {
-                            toDelete.push(key);
-                        }
-                    }
+        },
+        remove(key) {
+            try {
+                localStorage.removeItem(key);
+            } catch {
+                // Ignore.
+            }
+        },
+        keys(prefix) {
+            const found = [];
+            try {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && key.startsWith(prefix)) found.push(key);
                 }
+            } catch {
+                // Ignore.
             }
-            toDelete.forEach(function (k) { localStorage.removeItem(k); });
+            return found;
+        },
+    };
+
+    function newToken(prefix) {
+        let random = "";
+        if (window.crypto?.getRandomValues) {
+            const bytes = new Uint8Array(8);
+            window.crypto.getRandomValues(bytes);
+            random = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        } else {
+            random = Math.random().toString(36).slice(2, 12);
         }
+        return prefix + "_" + Date.now().toString(36) + "_" + random;
+    }
 
-        function resetIdleTimer() {
-            clearTimeout(idleTimer);
-            idleTimer = setTimeout(function () {
-                syncToServer();
-            }, IDLE_TIMEOUT);
-        }
+    function localDay() {
+        const now = new Date();
+        return now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
+    }
 
-        function syncToServer() {
-            if (isSyncing) return;
-            if (!attendanceUrl) return;
+    // ============================================================
+    // Network — every request has a timeout and a clear outcome:
+    //   ok | rejected (server said no, drop it) | auth (log in again) | retry (anything else)
+    // ============================================================
+    const REQUEST_TIMEOUT_MS = 15000;
 
-            const classId = state.class?.id;
-            if (!classId) return;
-
-            const presentIds = Array.from(selectedAttendance);
-            const date = state.attendance?.date || todayStr();
-
-            // Write to localStorage as pending
-            writeLocal(classId, date, presentIds, false);
-
-            isSyncing = true;
-            setIndicatorState("pending");
-            showRetryBtn(false);
-
-            function doSend(attempt) {
-                const payload = new URLSearchParams();
-                payload.append("class_id", String(classId));
-                payload.append("attendance_date", String(date));
-                presentIds.forEach(function (studentId) {
-                    payload.append("present_student_ids[]", String(studentId));
-                });
-
-                fetch(attendanceUrl, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                        "X-CSRF-Token": csrfToken,
-                    },
-                    body: payload,
-                })
-                    .then(function (response) { return response.json().then(function (result) { return { response: response, result: result }; }); })
-                    .then(function (data) {
-                        if (!data.response.ok || !data.result.ok) {
-                            throw new Error(data.result.message || "No se pudo guardar la asistencia.");
-                        }
-                        return data.result.data;
-                    })
-                    .then(function (data) {
-                        // Success
-                        retryCount = 0;
-                        isSyncing = false;
-                        setIndicatorState("synced");
-                        showRetryBtn(false);
-
-                        // Mark as synced in localStorage
-                        writeLocal(classId, date, presentIds, true);
-
-                        // Update in-memory state
-                        if (data && data.state) {
-                            applyIncomingState(data.state);
-                            selectedAttendance = new Set(state.attendance?.present_student_ids || []);
-                            currentAttendanceDate = state.attendance?.date || "";
-                            renderState();
-                        }
-
-                        if (data && data.message) {
-                            setFeedback(data.message, data.date_changed ? "info" : "success");
-                        }
-                    })
-                    .catch(function (error) {
-                        if (attempt < MAX_RETRIES) {
-                            const delay = BACKOFF_MS[attempt];
-                            setTimeout(function () {
-                                doSend(attempt + 1);
-                            }, delay);
-                        } else {
-                            // All retries exhausted
-                            isSyncing = false;
-                            setIndicatorState("error");
-                            showRetryBtn(true);
-                        }
-                    });
-            }
-
-            doSend(0);
-        }
-
-        function onAttendanceToggle() {
-            const classId = state.class?.id;
-            if (!classId) return;
-            const date = state.attendance?.date || todayStr();
-
-            // Save to localStorage
-            writeLocal(classId, date, selectedAttendance, false);
-
-            // Set indicator to pending
-            setIndicatorState("pending");
-
-            // Reset idle timer
-            resetIdleTimer();
-        }
-
-        function recoverOnLoad() {
-            const classId = state.class?.id;
-            if (!classId) return;
-
-            cleanupOldKeys(classId);
-
-            const today = todayStr();
-            const key = storageKey(classId, today);
-            const data = readLocal(classId, today);
-
-            if (data && data.ids && data.ids.length > 0 && !data.synced) {
-                // Restore the selection in memory
-                data.ids.forEach(function (id) { selectedAttendance.add(id); });
-                renderState();
-
-                // Sync immediately
-                syncToServer();
-            }
-        }
-
-        function attachListeners() {
-            // Listen for clicks on attendance buttons (delegated)
-            if (attendanceContainer) {
-                attendanceContainer.addEventListener("click", function (e) {
-                    if (e.target.classList && e.target.classList.contains("attendance-student-button")) {
-                        onAttendanceToggle();
-                    }
-                });
-                attendanceContainer.addEventListener("touchend", function (e) {
-                    if (e.target.classList && e.target.classList.contains("attendance-student-button")) {
-                        onAttendanceToggle();
-                    }
-                });
-            }
-
-            // Visibility change: sync immediately when page is hidden
-            document.addEventListener("visibilitychange", function () {
-                if (document.visibilityState === "hidden") {
-                    syncToServer();
-                }
-            });
-
-            // Warn before closing if attendance is unsynced
-            window.addEventListener("beforeunload", function (e) {
-                var classId = state.class?.id;
-                if (!classId) return;
-                var date = state.attendance?.date || todayStr();
-                var data = readLocal(classId, date);
-                if (data && !data.synced) {
-                    e.preventDefault();
-                    e.returnValue = "";
-                }
-            });
-
-            // Retry button
-            const retryBtn = getRetryBtn();
-            if (retryBtn) {
-                retryBtn.addEventListener("click", function () {
-                    retryCount = 0;
-                    syncToServer();
-                });
-            }
-        }
-
-        function init() {
-            attachListeners();
-            // Delay recovery until after initial render
-            setTimeout(recoverOnLoad, 100);
-        }
-
-        return {
-            init: init,
-            onToggle: onAttendanceToggle,
-            sync: syncToServer,
+    async function send(method, url, params) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+        const options = {
+            method: method,
+            headers: { "X-CSRF-Token": csrfToken },
+            credentials: "same-origin",
+            cache: "no-store",
+            signal: controller.signal,
         };
-    })();
+        if (method === "POST") {
+            options.headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8";
+            options.body = params;
+        }
+
+        let response;
+        let result = null;
+        try {
+            response = await fetch(url, options);
+            try {
+                result = await response.json();
+            } catch {
+                result = null;
+            }
+        } catch {
+            return { kind: "retry", message: "Sin conexión con el servidor." };
+        } finally {
+            clearTimeout(timer);
+        }
+
+        if (response.status === 401) return { kind: "auth" };
+        if (response.status === 419) return { kind: "csrf" };
+        if (response.ok && result && result.ok === true) return { kind: "ok", data: result.data || {} };
+        if (response.status === 422 && result && result.ok === false) {
+            return { kind: "rejected", message: result.message || "El servidor rechazó la acción." };
+        }
+        return { kind: "retry", message: "El servidor no respondió bien (HTTP " + response.status + ")." };
+    }
+
+    async function refreshFromServer() {
+        const separator = stateUrl.includes("?") ? "&" : "?";
+        const outcome = await send("GET", stateUrl + separator + "class_id=" + encodeURIComponent(classId));
+        if (outcome.kind === "ok") {
+            if (outcome.data.csrf_token) csrfToken = outcome.data.csrf_token;
+            if (outcome.data.state) setServerState(outcome.data.state);
+        }
+        return outcome;
+    }
+
+    async function post(url, params) {
+        let outcome = await send("POST", url, params);
+        if (outcome.kind !== "csrf") return outcome;
+
+        // The session changed (for example after logging in again in another tab): get a fresh token.
+        const refreshed = await refreshFromServer();
+        if (refreshed.kind !== "ok") return refreshed.kind === "auth" ? refreshed : { kind: "retry", message: refreshed.message };
+
+        outcome = await send("POST", url, params);
+        return outcome.kind === "csrf" ? { kind: "auth" } : outcome;
+    }
+
+    function backoffMs(attempt) {
+        const steps = [2000, 4000, 8000, 15000, 30000];
+        return steps[Math.min(attempt, steps.length) - 1];
+    }
 
     // ============================================================
-    // EvaluationSync module — local-first spin/evaluate with queue
+    // Local state — rebuild the screen from serverState + queued actions
     // ============================================================
-    const EvaluationSync = (function () {
-        const MAX_RETRIES = 3;
-        const BACKOFF_MS = [2000, 4000, 8000];
-        const QUEUE_KEY_PREFIX = "eval_queue_";
-        const ID_MAP_PREFIX = "eval_id_map_";
+    function cloneState(source) {
+        return JSON.parse(JSON.stringify(source));
+    }
 
-        let isDraining = false;
-        let drainTimer = null;
-        let idMap = {}; // tempId → realId mapping
+    function startLocalCycle(target) {
+        target.cycle = Object.assign({}, target.cycle, { id: null, number: Number(target.cycle.number) + 1, status: "open" });
+        target.remaining_students = (target.attendance?.students || []).map((student) => Object.assign({}, student));
+        target.stats.evaluated_students = 0;
+    }
 
-        // --- localStorage helpers ---
+    function applyLocally(target, action) {
+        const pending = target.pending_evaluation;
 
-        function queueKey(classId) {
-            return QUEUE_KEY_PREFIX + classId;
-        }
-
-        function idMapKey(classId) {
-            return ID_MAP_PREFIX + classId;
-        }
-
-        function readQueue(classId) {
-            try {
-                const raw = localStorage.getItem(queueKey(classId));
-                return raw ? JSON.parse(raw) : [];
-            } catch {
-                return [];
+        if (action.type === "spin") {
+            if (pending) {
+                // The server already has this spin (its answer got lost); remember the link.
+                if (Number(pending.student.id) === Number(action.studentId)) pending.spinToken = action.token;
+                return;
             }
+            const index = target.remaining_students.findIndex((s) => Number(s.id) === Number(action.studentId));
+            if (index === -1) return;
+            const student = target.remaining_students.splice(index, 1)[0];
+            target.pending_evaluation = { id: null, spinToken: action.token, score: null, student: student };
+            return;
         }
 
-        function writeQueue(classId, queue) {
-            try {
-                localStorage.setItem(queueKey(classId), JSON.stringify(queue));
-            } catch {
-                // localStorage full — silently ignore
-            }
+        if (action.type === "evaluate") {
+            if (!pending) return;
+            const matches = (action.spinToken && pending.spinToken === action.spinToken)
+                || (action.evaluationId && Number(pending.id) === Number(action.evaluationId))
+                || Number(pending.student.id) === Number(action.studentId);
+            if (!matches) return;
+
+            target.pending_evaluation = null;
+            target.recent_evaluations.unshift({ student: pending.student.label, score: action.score, evaluated_at: null });
+            target.recent_evaluations = target.recent_evaluations.slice(0, 8);
+            target.stats.evaluated_students += 1;
+            // The server opens the next round by itself after the last evaluation.
+            if (target.remaining_students.length === 0) startLocalCycle(target);
+            return;
         }
 
-        function readIdMap(classId) {
-            try {
-                const raw = localStorage.getItem(idMapKey(classId));
-                return raw ? JSON.parse(raw) : {};
-            } catch {
-                return {};
-            }
+        if (action.type === "reset" && !pending) {
+            startLocalCycle(target);
         }
+    }
 
-        function writeIdMap(classId, map) {
-            try {
-                localStorage.setItem(idMapKey(classId), JSON.stringify(map));
-            } catch {
-                // silently ignore
-            }
-        }
+    function rebase() {
+        const next = cloneState(serverState);
+        Queue.items().forEach((action) => applyLocally(next, action));
 
-        function generateTempId(prefix) {
-            const ts = Date.now();
-            const rand = Math.random().toString(36).slice(2, 10);
-            return prefix + "_" + ts + "_" + rand;
-        }
+        next.stats.remaining_students = next.remaining_students.length;
+        next.stats.can_spin = next.cycle.status === "open" && !next.pending_evaluation && next.remaining_students.length > 0;
+        next.stats.can_reset = next.stats.total_students > 0 && !next.pending_evaluation;
+        state = next;
+    }
 
-        // --- Indicator helpers ---
+    function setServerState(incoming) {
+        serverState = incoming;
+        rebase();
+        renderState();
+    }
 
-        function getSpinIndicator() {
-            return document.getElementById("eval-sync-indicator");
-        }
+    // ============================================================
+    // Queue — spins, evaluations and resets, sent one by one, in order, until they get through
+    // ============================================================
+    const Queue = (function () {
+        const storageKey = "eval_queue_" + classId;
+        let items = migrateLegacy(Store.get(storageKey, []));
+        let running = false;
+        let attempts = 0;
+        let status = "idle"; // idle | syncing | retrying | auth
+        let lastError = "";
+        let retryTimer = null;
 
-        function getEvalIndicator() {
-            return document.getElementById("eval-score-indicator");
-        }
-
-        function getRetryBtn() {
-            return document.getElementById("eval-retry-btn");
-        }
-
-        function setIndicatorState(el, syncState) {
-            if (!el) return;
-            el.className = el.className.replace(/\b(pending|synced|error)\b/g, "").trim();
-            if (syncState) el.classList.add(syncState);
-        }
-
-        function updateIndicators() {
-            const classId = state.class?.id;
-            if (!classId) return;
-
-            const queue = readQueue(classId);
-            const hasPending = queue.length > 0;
-            const hasError = queue.some(function (a) { return a.retryCount >= MAX_RETRIES; });
-
-            const spinInd = getSpinIndicator();
-            const evalInd = getEvalIndicator();
-            const retryBtn = getRetryBtn();
-
-            if (hasError) {
-                setIndicatorState(spinInd, "error");
-                setIndicatorState(evalInd, "error");
-                if (retryBtn) retryBtn.style.display = "inline-block";
-            } else if (hasPending) {
-                setIndicatorState(spinInd, "pending");
-                setIndicatorState(evalInd, "pending");
-                if (retryBtn) retryBtn.style.display = "none";
-            } else {
-                setIndicatorState(spinInd, "synced");
-                setIndicatorState(evalInd, "synced");
-                if (retryBtn) retryBtn.style.display = "none";
-            }
-        }
-
-        // --- Queue operations ---
-
-        function enqueue(classId, action) {
-            const queue = readQueue(classId);
-            queue.push(action);
-            writeQueue(classId, queue);
-            updateIndicators();
-            scheduleDrain(classId);
-        }
-
-        function removeAction(classId, tempId) {
-            const queue = readQueue(classId);
-            const filtered = queue.filter(function (a) { return a.tempId !== tempId; });
-            writeQueue(classId, filtered);
-        }
-
-        function updateActionEvaluationId(classId, oldEvalId, newEvalId) {
-            const queue = readQueue(classId);
-            queue.forEach(function (action) {
-                if (action.type === "evaluate" && action.evaluationId === oldEvalId) {
-                    action.evaluationId = newEvalId;
+        // Queues written by the previous version used tempId and a separate id map.
+        function migrateLegacy(list) {
+            if (!Array.isArray(list)) return [];
+            const legacyMap = Store.get("eval_id_map_" + classId, {});
+            const migrated = list.filter((a) => a && a.type).map(function (a) {
+                if (a.token) return a;
+                const action = { token: a.tempId || newToken(a.type), type: a.type, studentId: a.studentId || null, ts: a.timestamp || Date.now() };
+                if (a.type === "evaluate") {
+                    action.score = a.score;
+                    if (typeof a.evaluationId === "string" && a.evaluationId.startsWith("spin_")) {
+                        action.spinToken = a.evaluationId;
+                        action.evaluationId = legacyMap[a.evaluationId] || null;
+                    } else {
+                        action.evaluationId = a.evaluationId || null;
+                    }
                 }
+                return action;
             });
-            writeQueue(classId, queue);
+            Store.remove("eval_id_map_" + classId);
+            return migrated;
         }
 
-        // --- ID mapping ---
-
-        function mapTempToReal(classId, tempId, realId) {
-            idMap = readIdMap(classId);
-            idMap[tempId] = realId;
-            writeIdMap(classId, idMap);
+        function persist() {
+            Store.set(storageKey, items);
         }
 
-        function resolveId(classId, id) {
-            if (typeof id === "number") return id;
-            if (typeof id === "string" && id.startsWith("spin_")) {
-                idMap = readIdMap(classId);
-                return idMap[id] || null;
-            }
-            return id;
-        }
-
-        // --- Network ---
-
-        function postAction(url, payload) {
-            return fetch(url, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                    "X-CSRF-Token": csrfToken,
-                },
-                body: new URLSearchParams(payload),
-            }).then(function (response) {
-                return response.json().then(function (result) {
-                    return { response: response, result: result };
-                });
-            }).then(function (data) {
-                if (!data.response.ok || !data.result.ok) {
-                    throw new Error(data.result.message || "Error del servidor.");
-                }
-                return data.result.data;
-            });
-        }
-
-        // --- Drain (process queue) ---
-
-        function drain(classId) {
-            if (isDraining) return;
-            if (!classId) classId = state.class?.id;
-            if (!classId) return;
-
-            const queue = readQueue(classId);
-            if (queue.length === 0) {
-                updateIndicators();
-                return;
-            }
-
-            isDraining = true;
-            drainOne(classId, 0);
-        }
-
-        function drainOne(classId, index) {
-            const queue = readQueue(classId);
-            if (index >= queue.length) {
-                isDraining = false;
-                updateIndicators();
-                return;
-            }
-
-            const action = queue[index];
-
-            // Skip confirmed actions
-            if (action.status === "confirmed") {
-                removeAction(classId, action.tempId);
-                isDraining = false;
-                drain(classId);
-                return;
-            }
-
-            // Max retries exhausted
-            if (action.retryCount >= MAX_RETRIES) {
-                isDraining = false;
-                updateIndicators();
-                return;
-            }
-
-            // Build request based on type
-            let url, payload;
+        function requestFor(action) {
+            const params = new URLSearchParams();
+            params.append("class_id", String(classId));
+            params.append("client_token", action.token);
 
             if (action.type === "spin") {
-                url = spinUrl;
-                payload = {
-                    class_id: String(classId),
-                    student_id: String(action.studentId),
-                };
+                params.append("student_id", String(action.studentId));
+                return { url: spinUrl, params: params };
+            }
+            if (action.type === "evaluate") {
+                params.append("score", action.score);
+                if (action.spinToken) params.append("spin_token", action.spinToken);
+                if (action.evaluationId) params.append("evaluation_id", String(action.evaluationId));
+                return { url: evaluateUrl, params: params };
+            }
+            return { url: resetUrl, params: params };
+        }
+
+        async function handleRejection(action, message) {
+            items = items.filter((a) => a.token !== action.token);
+            persist();
+            await refreshFromServer();
+
+            if (action.type === "spin") {
+                const serverPending = serverState.pending_evaluation;
+                const sameStudent = serverPending && Number(serverPending.student.id) === Number(action.studentId);
+                items = items.filter(function (a) {
+                    if (a.type !== "evaluate" || a.spinToken !== action.token) return true;
+                    if (sameStudent) {
+                        // The spin did reach the server earlier: score that evaluation directly.
+                        a.spinToken = null;
+                        a.evaluationId = serverPending.id;
+                        return true;
+                    }
+                    Conflicts.add("No se guardó la evaluación de " + (a.studentLabel || "un alumno") + " (" + a.score + "): " + message);
+                    return false;
+                });
+                persist();
+                if (!sameStudent) Conflicts.add("No se guardó el sorteo de " + (action.studentLabel || "un alumno") + ": " + message);
             } else if (action.type === "evaluate") {
-                url = evaluateUrl;
-                var evalId = resolveId(classId, action.evaluationId);
-
-                // If we still can't resolve the ID (spin not confirmed yet), postpone
-                if (evalId === null) {
-                    setTimeout(function () {
-                        drainOne(classId, index);
-                    }, 500);
-                    return;
-                }
-
-                payload = {
-                    class_id: String(classId),
-                    evaluation_id: String(evalId),
-                    score: action.score,
-                };
-            } else if (action.type === "reset") {
-                url = resetUrl;
-                payload = {
-                    class_id: String(classId),
-                };
+                Conflicts.add("No se guardó la evaluación de " + (action.studentLabel || "un alumno") + " (" + action.score + "): " + message);
             } else {
-                // Unknown type — remove and continue
-                removeAction(classId, action.tempId);
-                isDraining = false;
-                drain(classId);
-                return;
+                Conflicts.add("No se creó la nueva ronda: " + message);
             }
 
-            postAction(url, payload)
-                .then(function (data) {
-                    // Success — remove from queue
-                    removeAction(classId, action.tempId);
+            rebase();
+            renderState();
+        }
 
-                    // Map tempId to real ID if this was a spin
-                    if (action.type === "spin" && data.selected && data.selected.id) {
-                        mapTempToReal(classId, action.tempId, data.selected.id);
-                        // Update any pending evaluates that reference this tempId
-                        updateActionEvaluationId(classId, action.tempId, data.selected.id);
+        async function run() {
+            if (running) return;
+            running = true;
+            clearTimeout(retryTimer);
+
+            try {
+                while (items.length > 0) {
+                    const action = items[0];
+                    status = "syncing";
+                    SyncUI.update();
+
+                    const request = requestFor(action);
+                    const outcome = await post(request.url, request.params);
+
+                    if (outcome.kind === "ok") {
+                        attempts = 0;
+                        items = items.filter((a) => a.token !== action.token);
+                        persist();
+                        if (outcome.data.state) {
+                            setServerState(outcome.data.state);
+                        } else {
+                            rebase();
+                            renderState();
+                        }
+                        continue;
                     }
 
-                    // Apply server state for reconciliation
-                    if (data.state) {
-                        applyIncomingState(data.state);
-                        renderState();
+                    if (outcome.kind === "rejected") {
+                        attempts = 0;
+                        await handleRejection(action, outcome.message);
+                        continue;
                     }
 
-                    // Continue draining
-                    isDraining = false;
-                    drain(classId);
-                })
-                .catch(function (error) {
-                    // Business error (server rejected) — reconcile and remove
-                    if (error.message && !error.message.includes("Failed to fetch") && !error.message.includes("NetworkError")) {
-                        removeAction(classId, action.tempId);
-                        // Try to get fresh state from server
-                        postAction(spinUrl, { class_id: String(classId), _peek: "1" })
-                            .catch(function () { /* ignore */ });
-                        isDraining = false;
-                        setFeedback("Se actualizó la información. " + error.message, "info");
-                        drain(classId);
+                    if (outcome.kind === "auth") {
+                        status = "auth";
                         return;
                     }
 
-                    // Network error — retry with backoff
-                    action.retryCount = (action.retryCount || 0) + 1;
-                    var q = readQueue(classId);
-                    var idx = q.findIndex(function (a) { return a.tempId === action.tempId; });
-                    if (idx !== -1) {
-                        q[idx].retryCount = action.retryCount;
-                        writeQueue(classId, q);
-                    }
-
-                    if (action.retryCount < MAX_RETRIES) {
-                        var delay = BACKOFF_MS[action.retryCount - 1];
-                        setTimeout(function () {
-                            isDraining = false;
-                            drainOne(classId, index);
-                        }, delay);
-                    } else {
-                        isDraining = false;
-                        updateIndicators();
-                        setFeedback("Error de conexión. Pulsa 'Reintentar' para sincronizar.", "error");
-                    }
-                });
-        }
-
-        function scheduleDrain(classId) {
-            clearTimeout(drainTimer);
-            drainTimer = setTimeout(function () {
-                drain(classId);
-            }, 100);
-        }
-
-        function forceSync() {
-            var classId = state.class?.id;
-            if (!classId) return;
-
-            // Reset retry counts
-            var queue = readQueue(classId);
-            queue.forEach(function (a) {
-                if (a.retryCount >= MAX_RETRIES) {
-                    a.retryCount = 0;
+                    attempts += 1;
+                    lastError = outcome.message || "";
+                    status = "retrying";
+                    retryTimer = setTimeout(run, backoffMs(attempts));
+                    return;
                 }
-            });
-            writeQueue(classId, queue);
 
-            isDraining = false;
-            drain(classId);
-        }
-
-        // --- Listeners ---
-
-        function attachListeners() {
-            // Online event — retry when connection restored
-            window.addEventListener("online", function () {
-                forceSync();
-            });
-
-            // Visibility change — sync when tab hidden
-            document.addEventListener("visibilitychange", function () {
-                if (document.visibilityState === "hidden") {
-                    forceSync();
-                }
-            });
-
-            // Warn before closing if there are pending actions
-            window.addEventListener("beforeunload", function (e) {
-                var classId = state.class?.id;
-                if (!classId) return;
-                var queue = readQueue(classId);
-                if (queue.length > 0) {
-                    e.preventDefault();
-                    e.returnValue = "";
-                }
-            });
-
-            // Retry button
-            var retryBtn = getRetryBtn();
-            if (retryBtn) {
-                retryBtn.addEventListener("click", function () {
-                    forceSync();
-                });
+                status = "idle";
+                lastError = "";
+            } finally {
+                running = false;
+                SyncUI.update();
             }
         }
 
-        // --- Init ---
-
-        function init() {
-            var classId = state.class?.id;
-            if (!classId) return;
-
-            idMap = readIdMap(classId);
-            attachListeners();
-
-            // Drain queue from previous session
-            setTimeout(function () {
-                drain(classId);
-            }, 200);
-        }
-
-        function getStatus() {
-            var classId = state.class?.id;
-            if (!classId) return { pending: 0, syncing: false };
-            var queue = readQueue(classId);
-            return {
-                pending: queue.length,
-                syncing: isDraining,
-            };
-        }
-
         return {
-            init: init,
-            enqueue: enqueue,
-            drain: drain,
-            forceSync: forceSync,
-            getStatus: getStatus,
-            generateTempId: generateTempId,
+            items: () => items.slice(),
+            add(action) {
+                items.push(action);
+                persist();
+                rebase();
+                renderState();
+                SyncUI.update();
+                setTimeout(run, 0);
+            },
+            kick() {
+                if (running) return;
+                if (status !== "retrying") attempts = 0;
+                setTimeout(run, 0);
+            },
+            reloadFromStorage() {
+                items = migrateLegacy(Store.get(storageKey, []));
+                rebase();
+                renderState();
+                SyncUI.update();
+            },
+            status: () => ({ pending: items.length, status: status, attempts: attempts, lastError: lastError, oldest: items[0]?.ts || null }),
+            storageKey: storageKey,
         };
     })();
 
-    function applyIncomingState(incomingState) {
-        const nextAttendanceDate = incomingState.attendance?.date || "";
-        if (nextAttendanceDate !== currentAttendanceDate) {
-            selectedAttendance = new Set(incomingState.attendance?.present_student_ids || []);
-            currentAttendanceDate = nextAttendanceDate;
+    // ============================================================
+    // Attendance — only while a roll call is open; saved locally on every tap
+    // ============================================================
+    const Attendance = (function () {
+        const SYNC_DELAY_MS = 1500;
+        const KEEP_DAYS = 14;
+        const keyPrefix = "eval_attendance_" + classId + "_";
+        const sessionKey = "eval_attendance_session_" + classId;
+        const today = serverState.attendance?.date || localDay();
+        const pageDay = localDay();
+
+        let active = Store.get(sessionKey, null) === today;
+        let records = loadRecords();
+        let selected = initialSelection();
+        let running = false;
+        let attempts = 0;
+        let status = "idle"; // idle | syncing | retrying | auth
+        let lastError = "";
+        let timer = null;
+
+        // record: { ids, rev, syncedRev, ts } — unsynced while rev !== syncedRev
+        function normalize(raw) {
+            if (!raw || !Array.isArray(raw.ids)) return null;
+            if (typeof raw.rev === "number") return raw;
+            // Format of the previous version: { ids, synced, ts }
+            return { ids: raw.ids, rev: 1, syncedRev: raw.synced ? 1 : 0, ts: raw.ts || Date.now() };
         }
 
-        state = incomingState;
+        function loadRecords() {
+            const loaded = {};
+            Store.keys(keyPrefix).forEach(function (key) {
+                const date = key.slice(keyPrefix.length);
+                const record = normalize(Store.get(key, null));
+                if (!record || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+
+                const ageDays = (Date.parse(today) - Date.parse(date)) / 86400000;
+                if (record.rev === record.syncedRev && ageDays > KEEP_DAYS) {
+                    Store.remove(key);
+                    return;
+                }
+                loaded[date] = record;
+            });
+            return loaded;
+        }
+
+        function initialSelection() {
+            const record = records[today];
+            if (record && record.rev !== record.syncedRev) return new Set(record.ids.map(Number));
+            return new Set((serverState.attendance?.present_student_ids || []).map(Number));
+        }
+
+        function save(date, record) {
+            records[date] = record;
+            Store.set(keyPrefix + date, record);
+        }
+
+        function unsyncedDates() {
+            return Object.keys(records).filter((date) => records[date].rev !== records[date].syncedRev).sort();
+        }
+
+        function schedule(delay) {
+            clearTimeout(timer);
+            timer = setTimeout(run, delay);
+        }
+
+        async function run() {
+            if (running) return;
+            running = true;
+            clearTimeout(timer);
+
+            try {
+                let dates = unsyncedDates();
+                while (dates.length > 0) {
+                    const date = dates[0];
+                    const sent = Object.assign({}, records[date]);
+                    status = "syncing";
+                    SyncUI.update();
+
+                    const params = new URLSearchParams();
+                    params.append("class_id", String(classId));
+                    params.append("attendance_date", date);
+                    sent.ids.forEach((id) => params.append("present_student_ids[]", String(id)));
+
+                    const outcome = await post(attendanceUrl, params);
+
+                    if (outcome.kind === "ok" || outcome.kind === "rejected") {
+                        attempts = 0;
+                        // Taps made while the request was travelling raise rev again and are sent next round.
+                        const latest = records[date];
+                        save(date, Object.assign({}, latest, { syncedRev: Math.max(latest.syncedRev, sent.rev) }));
+                        if (outcome.kind === "rejected") {
+                            Conflicts.add("No se guardó la asistencia del " + date + ": " + outcome.message);
+                        } else if (outcome.data.state) {
+                            setServerState(outcome.data.state);
+                        }
+                        dates = unsyncedDates();
+                        continue;
+                    }
+
+                    if (outcome.kind === "auth") {
+                        status = "auth";
+                        return;
+                    }
+
+                    attempts += 1;
+                    lastError = outcome.message || "";
+                    status = "retrying";
+                    schedule(backoffMs(attempts));
+                    return;
+                }
+
+                status = "idle";
+                lastError = "";
+            } finally {
+                running = false;
+                SyncUI.update();
+                renderAttendance();
+            }
+        }
+
+        return {
+            today: today,
+            isActive: () => active,
+            isPresent: (id) => selected.has(Number(id)),
+            hasData: () => !!serverState.attendance?.taken || !!records[today],
+            start() {
+                if (localDay() !== pageDay) {
+                    setFeedback("Ha cambiado el día desde que abriste la página. Recárgala para pasar la lista de hoy.", "error");
+                    return;
+                }
+                active = true;
+                Store.set(sessionKey, today);
+                renderAttendance();
+            },
+            finish() {
+                active = false;
+                Store.remove(sessionKey);
+                renderAttendance();
+                if (unsyncedDates().length > 0) {
+                    attempts = 0;
+                    schedule(0);
+                }
+            },
+            toggle(studentId) {
+                if (!active) return false;
+                const id = Number(studentId);
+                const nowPresent = !selected.has(id);
+                if (nowPresent) selected.add(id);
+                else selected.delete(id);
+
+                const previous = records[today] || { rev: 0, syncedRev: 0 };
+                save(today, { ids: Array.from(selected), rev: previous.rev + 1, syncedRev: previous.syncedRev, ts: Date.now() });
+                SyncUI.update();
+                schedule(SYNC_DELAY_MS);
+                return nowPresent;
+            },
+            onServerState() {
+                const record = records[today];
+                if (!active && (!record || record.rev === record.syncedRev)) {
+                    selected = new Set((serverState.attendance?.present_student_ids || []).map(Number));
+                }
+            },
+            kick() {
+                if (running || unsyncedDates().length === 0) return;
+                if (status !== "retrying") attempts = 0;
+                schedule(0);
+            },
+            unsynced: () => unsyncedDates().map((date) => ({ date: date, ids: records[date].ids, ts: records[date].ts })),
+            status: () => ({ pending: unsyncedDates().length, status: status, attempts: attempts, lastError: lastError }),
+        };
+    })();
+
+    // ============================================================
+    // Conflicts — actions the server refused; kept until the teacher reads them
+    // ============================================================
+    const Conflicts = (function () {
+        const storageKey = "eval_conflicts_" + classId;
+        let messages = Store.get(storageKey, []);
+
+        return {
+            add(message) {
+                messages.push(new Date().toLocaleTimeString() + " · " + message);
+                messages = messages.slice(-20);
+                Store.set(storageKey, messages);
+                SyncUI.update();
+            },
+            clear() {
+                messages = [];
+                Store.remove(storageKey);
+                SyncUI.update();
+            },
+            list: () => messages.slice(),
+        };
+    })();
+
+    // ============================================================
+    // Sync UI — dots, warning banner and backup download
+    // ============================================================
+    const SyncUI = (function () {
+        const SLOW_MS = 20000;
+
+        function setDot(element, level) {
+            if (!element) return;
+            element.classList.remove("pending", "synced", "error");
+            element.classList.add(level);
+        }
+
+        function levelFor(info) {
+            if (info.pending === 0) return "synced";
+            if (info.status === "auth" || (info.status === "retrying" && info.attempts >= 2)) return "error";
+            return "pending";
+        }
+
+        function update() {
+            const queueInfo = Queue.status();
+            const attendanceInfo = Attendance.status();
+            const queueLevel = levelFor(queueInfo);
+            const attendanceLevel = levelFor(attendanceInfo);
+
+            setDot(document.getElementById("eval-sync-indicator"), queueLevel);
+            setDot(document.getElementById("eval-score-indicator"), queueLevel);
+            setDot(document.getElementById("sync-indicator"), attendanceLevel);
+
+            const total = queueInfo.pending + attendanceInfo.pending;
+            const authLost = queueInfo.status === "auth" || attendanceInfo.status === "auth";
+            const failing = queueLevel === "error" || attendanceLevel === "error";
+            const slow = queueInfo.oldest !== null && Date.now() - queueInfo.oldest > SLOW_MS;
+
+            if (syncBanner) {
+                if (total > 0 && (authLost || failing || slow)) {
+                    const parts = [];
+                    if (queueInfo.pending > 0) parts.push(queueInfo.pending + (queueInfo.pending === 1 ? " acción de la ruleta" : " acciones de la ruleta"));
+                    if (attendanceInfo.pending > 0) parts.push("la asistencia");
+                    let text = "⚠ Sin guardar en el servidor: " + parts.join(" y ") + ". Está a salvo en este navegador.";
+                    if (authLost) text += " La sesión ha caducado: inicia sesión en otra pestaña y pulsa Reintentar.";
+                    else if (queueInfo.lastError || attendanceInfo.lastError) text += " (" + (queueInfo.lastError || attendanceInfo.lastError) + ")";
+                    syncBannerText.textContent = text;
+                    syncBanner.hidden = false;
+                } else {
+                    syncBanner.hidden = true;
+                }
+            }
+
+            if (conflictBox) {
+                const messages = Conflicts.list();
+                conflictList.innerHTML = "";
+                messages.forEach(function (message) {
+                    const li = document.createElement("li");
+                    li.textContent = message;
+                    conflictList.appendChild(li);
+                });
+                conflictBox.hidden = messages.length === 0;
+            }
+
+            if (attendanceStatus) {
+                const labels = {
+                    synced: Attendance.hasData() ? "✓ Guardada" : "",
+                    pending: "Guardando…",
+                    error: "⚠ Sin guardar en el servidor",
+                };
+                attendanceStatus.textContent = labels[attendanceLevel];
+                attendanceStatus.dataset.level = attendanceLevel;
+            }
+        }
+
+        function downloadBackup() {
+            const payload = {
+                format: "evaluator-backup",
+                version: 1,
+                created_at: new Date().toISOString(),
+                class: { id: classId, code: serverState.class.code, name: serverState.class.name },
+                actions: Queue.items(),
+                attendance: Attendance.unsynced(),
+            };
+            const slug = String(serverState.class.name || serverState.class.code || classId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "clase";
+            const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "evaluator-respaldo-" + slug + "-" + stamp + ".json";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        }
+
+        return { update: update, downloadBackup: downloadBackup };
+    })();
+
+    function retryAll() {
+        Queue.kick();
+        Attendance.kick();
     }
 
+    function hasUnsavedWork() {
+        return Queue.status().pending > 0 || Attendance.status().pending > 0;
+    }
+
+    // ============================================================
+    // Drawing
+    // ============================================================
     function playAttendanceBling(isSelecting = true) {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         if (!AudioContextClass) {
@@ -764,14 +757,14 @@ if (app) {
         return Array.isArray(state.remaining_students) ? state.remaining_students : [];
     }
 
-    function drawWheel() {
+    function drawWheel(segmentsOverride) {
         const size = Math.min(canvas.clientWidth || canvas.width, canvas.clientHeight || canvas.height || canvas.width);
         canvas.width = size;
         canvas.height = size;
 
         context.clearRect(0, 0, canvas.width, canvas.height);
 
-        const segments = currentSegments();
+        const segments = segmentsOverride || currentSegments();
         if (!segments.length) {
             drawEmptyWheel();
             return;
@@ -888,11 +881,21 @@ if (app) {
             return;
         }
 
+        const active = Attendance.isActive();
         const attendanceDateEl = document.getElementById("attendance-date");
         if (attendanceDateEl) {
-            attendanceDateEl.textContent = currentAttendanceDate || "";
+            attendanceDateEl.textContent = Attendance.today;
         }
 
+        if (attendanceStartButton) {
+            attendanceStartButton.hidden = active;
+            attendanceStartButton.textContent = Attendance.hasData() ? "Editar lista" : "Pasar lista";
+        }
+        if (attendanceFinishButton) {
+            attendanceFinishButton.hidden = !active;
+        }
+
+        attendanceContainer.classList.toggle("is-locked", !active);
         attendanceContainer.innerHTML = "";
         const students = attendanceStudents();
 
@@ -919,29 +922,26 @@ if (app) {
                 return;
             }
 
-            if (selectedAttendance.has(Number(student.id))) {
+            if (Attendance.isPresent(student.id)) {
                 button.classList.add("is-present");
             }
 
+            button.disabled = !active;
             button.addEventListener("click", () => {
-                const studentId = Number(student.id);
-                if (selectedAttendance.has(studentId)) {
-                    selectedAttendance.delete(studentId);
-                    button.classList.remove("is-present");
-                    playAttendanceBling(false);
-                    return;
-                }
-
-                selectedAttendance.add(studentId);
-                button.classList.add("is-present");
-                playAttendanceBling(true);
+                const nowPresent = Attendance.toggle(student.id);
+                button.classList.toggle("is-present", nowPresent);
+                playAttendanceBling(nowPresent);
             });
 
             attendanceContainer.appendChild(button);
         });
+
+        SyncUI.update();
     }
 
     function renderState() {
+        Attendance.onServerState();
+
         totalElement.textContent = String(state.stats.total_students);
         remainingElement.textContent = String(state.stats.remaining_students);
         evaluatedElement.textContent = String(state.stats.evaluated_students);
@@ -964,7 +964,7 @@ if (app) {
 
         renderRecentEvaluations();
         renderAttendance();
-        drawWheel();
+        if (!isAnimating) drawWheel();
     }
 
     function applyWinnerFontSize(label) {
@@ -1032,7 +1032,7 @@ if (app) {
 
             const elapsed = now - pendingSpinStart;
             rotation += 0.015 + Math.min(0.02, elapsed / 16000);
-            drawWheelWithSegments(previousSegments);
+            drawWheel(previousSegments);
             pendingSpinFrame = requestAnimationFrame(animate);
         };
 
@@ -1046,35 +1046,14 @@ if (app) {
         }
     }
 
-    async function postJson(url, payload) {
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "X-CSRF-Token": csrfToken,
-            },
-            body: new URLSearchParams(payload),
-        });
-
-        const result = await response.json();
-        if (!response.ok || !result.ok) {
-            throw new Error(result.message || "No se pudo completar la operación.");
-        }
-
-        return result.data;
-    }
-
-    function animateToSelected(selectedStudent, previousSegments, incomingState) {
+    function animateToSelected(selectedStudent, previousSegments) {
         const index = previousSegments.findIndex((student) => Number(student.id) === Number(selectedStudent.id));
-        applyIncomingState(incomingState);
 
         if (index === -1) {
+            isAnimating = false;
             renderState();
             return;
         }
-
-        isAnimating = true;
-        renderState();
 
         const arc = (Math.PI * 2) / previousSegments.length;
         const centerAngle = index * arc + arc / 2;
@@ -1089,7 +1068,7 @@ if (app) {
             const progress = Math.min((now - startTime) / duration, 1);
             const eased = 1 - Math.pow(1 - progress, 3);
             rotation = start + (end - start) * eased;
-            drawWheelWithSegments(previousSegments);
+            drawWheel(previousSegments);
 
             if (progress < 1) {
                 requestAnimationFrame(animate);
@@ -1106,138 +1085,68 @@ if (app) {
         requestAnimationFrame(animate);
     }
 
-    function drawWheelWithSegments(segments) {
-        const original = state.remaining_students;
-        state.remaining_students = segments;
-        drawWheel();
-        state.remaining_students = original;
-    }
-
     // ============================================================
-    // LOCAL-FIRST HANDLERS
+    // Handlers — act on screen at once, then queue for the server
     // ============================================================
-
     function handleSpin() {
-        if (isAnimating) return;
-        if (state.pending_evaluation !== null) return;
-        if (!state.stats.can_spin) return;
+        if (isAnimating || state.pending_evaluation || !state.stats.can_spin) return;
 
         const remaining = currentSegments();
         if (remaining.length === 0) return;
 
-        const classId = state.class.id;
-
-        // 1. Pick student locally
         const chosen = remaining[Math.floor(Math.random() * remaining.length)];
-        const tempId = EvaluationSync.generateTempId("spin");
-
-        // 2. Update state immediately
-        state.pending_evaluation = {
-            id: tempId,
-            score: null,
-            selected_at: new Date().toISOString(),
-            evaluated_at: null,
-            evaluated_by: null,
-            student: { id: chosen.id, code: chosen.code, name: chosen.name, label: chosen.label, vip: !!chosen.vip },
-            tempId: tempId,
-        };
-        state.remaining_students = remaining.filter(function (s) { return Number(s.id) !== Number(chosen.id); });
-        state.stats.remaining_students = state.remaining_students.length;
-        state.stats.can_spin = false;
-        state.stats.can_reset = false;
-
-        // 3. Animate immediately
-        clearWinnerDisplay();
         const previousSegments = [...remaining];
+
+        clearWinnerDisplay();
         startPendingSpin(previousSegments);
+
+        Queue.add({
+            token: newToken("spin"),
+            type: "spin",
+            studentId: chosen.id,
+            studentLabel: chosen.label,
+            ts: Date.now(),
+        });
 
         setTimeout(function () {
             stopPendingSpin();
-            animateToSelected(chosen, previousSegments, state);
+            animateToSelected(chosen, previousSegments);
         }, 400);
-
-        // 4. Enqueue for server sync
-        EvaluationSync.enqueue(classId, {
-            tempId: tempId,
-            type: "spin",
-            classId: classId,
-            studentId: chosen.id,
-            timestamp: Date.now(),
-            retryCount: 0,
-        });
     }
 
     function handleEvaluation(score) {
-        if (!state.pending_evaluation || isAnimating) return;
+        const pending = state.pending_evaluation;
+        if (!pending || isAnimating) return;
 
-        const classId = state.class.id;
-        const evaluation = state.pending_evaluation;
-
-        // 1. Update state immediately
-        state.recent_evaluations.unshift({
-            student: evaluation.student.label,
-            score: score,
-            evaluated_at: new Date().toISOString(),
-        });
-        if (state.recent_evaluations.length > 8) {
-            state.recent_evaluations.pop();
-        }
-
-        state.pending_evaluation = null;
-        state.stats.evaluated_students += 1;
-
-        // Check if this was the last student
-        if (state.remaining_students.length === 0) {
-            state.cycle.status = "completed";
-            state.stats.can_spin = false;
-            state.stats.can_reset = true;
-        } else {
-            state.stats.can_spin = true;
-            state.stats.can_reset = true;
-        }
-
-        // 2. Update UI immediately
         clearWinnerDisplay();
-        renderState();
-        setFeedback(`Evaluación guardada con "${score}".`, "success");
-
-        // 3. Enqueue for server sync
-        EvaluationSync.enqueue(classId, {
-            tempId: EvaluationSync.generateTempId("eval"),
+        Queue.add({
+            token: newToken("eval"),
             type: "evaluate",
-            classId: classId,
-            evaluationId: evaluation.id,
-            studentId: evaluation.student.id,
+            spinToken: pending.spinToken || null,
+            evaluationId: pending.id || null,
+            studentId: pending.student.id,
+            studentLabel: pending.student.label,
             score: score,
-            timestamp: Date.now(),
-            retryCount: 0,
+            ts: Date.now(),
         });
+        setFeedback(`Evaluación "${score}" registrada para ${pending.student.label}.`, "success");
     }
 
     function handleReset() {
-        if (isAnimating) return;
+        if (isAnimating || !state.stats.can_reset) return;
 
         const confirmed = window.confirm(
             "Se creará una nueva ronda aunque todavía queden alumnos pendientes. ¿Quieres continuar?"
         );
         if (!confirmed) return;
 
-        const classId = state.class.id;
-
-        // Optimistic: disable buttons while syncing
-        state.stats.can_reset = false;
-        state.stats.can_spin = false;
-        renderState();
-        setFeedback("Creando nueva ronda...", "success");
-
-        // Enqueue for server sync — state will be reconciled on success
-        EvaluationSync.enqueue(classId, {
-            tempId: EvaluationSync.generateTempId("reset"),
+        clearWinnerDisplay();
+        Queue.add({
+            token: newToken("reset"),
             type: "reset",
-            classId: classId,
-            timestamp: Date.now(),
-            retryCount: 0,
+            ts: Date.now(),
         });
+        setFeedback("Nueva ronda creada.", "success");
     }
 
     function escapeHtml(value) {
@@ -1249,6 +1158,9 @@ if (app) {
             .replaceAll("'", "&#039;");
     }
 
+    // ============================================================
+    // Wiring
+    // ============================================================
     spinButton.addEventListener("click", handleSpin);
     resetButton.addEventListener("click", handleReset);
 
@@ -1256,16 +1168,38 @@ if (app) {
         button.addEventListener("click", () => handleEvaluation(button.dataset.score));
     });
 
+    attendanceStartButton?.addEventListener("click", () => Attendance.start());
+    attendanceFinishButton?.addEventListener("click", () => Attendance.finish());
+
+    document.querySelectorAll("[data-sync-retry]").forEach((button) => button.addEventListener("click", retryAll));
+    document.querySelectorAll("[data-sync-backup]").forEach((button) => button.addEventListener("click", () => SyncUI.downloadBackup()));
+    document.getElementById("sync-conflicts-clear")?.addEventListener("click", () => Conflicts.clear());
+
+    window.addEventListener("online", retryAll);
+    document.addEventListener("visibilitychange", retryAll);
+    setInterval(function () {
+        retryAll();
+        SyncUI.update();
+    }, 30000);
+
+    // Another tab of the same class changed the queue.
+    window.addEventListener("storage", function (event) {
+        if (event.key === Queue.storageKey) Queue.reloadFromStorage();
+    });
+
+    window.addEventListener("beforeunload", function (event) {
+        if (hasUnsavedWork()) {
+            event.preventDefault();
+            event.returnValue = "";
+        }
+    });
+
     window.addEventListener("resize", () => {
-        drawWheel();
+        if (!isAnimating) drawWheel();
         updateWinnerDisplay();
     });
 
+    rebase();
     renderState();
-
-    // Initialize auto-save attendance
-    AttendanceSync.init();
-
-    // Initialize evaluation sync (local-first)
-    EvaluationSync.init();
+    retryAll();
 }

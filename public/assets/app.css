@@ -328,11 +328,42 @@ label { display: grid; gap: 0.5rem; color: var(--muted); }
 	background-color: #ef4444;
 }
 
-#eval-retry-btn {
-	margin-top: 0.5rem;
-	font-size: 0.85rem;
-	padding: 0.4rem 1rem;
+/* Offline sync: warning banner, refused actions, roll call */
+.sync-banner,
+.sync-conflicts {
+	margin-bottom: 1rem;
+	padding: 1rem 1.1rem;
+	border-radius: 18px;
+	box-shadow: var(--shadow);
 }
+
+.sync-banner { background: rgba(159, 62, 46, 0.14); color: var(--danger); }
+
+.sync-conflicts { background: rgba(188, 122, 47, 0.14); color: var(--text); }
+
+.sync-banner p, .sync-conflicts p { margin: 0 0 0.6rem; }
+
+.sync-conflicts ul { margin: 0 0 0.8rem; padding-left: 1.2rem; }
+
+.sync-banner-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+
+.sync-banner[hidden], .sync-conflicts[hidden], .attendance-heading [hidden] { display: none; }
+
+.attendance-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin-bottom: 0.8rem; }
+
+.attendance-heading h2 { margin: 0; margin-right: auto; }
+
+.attendance-status { font-size: 0.9rem; color: var(--muted, #8a7e6d); }
+
+.attendance-status[data-level="error"] { color: var(--danger); font-weight: 700; }
+
+.attendance-grid.is-locked .attendance-student-button:not(.is-vip) { cursor: default; opacity: 0.75; }
+
+.attendance-grid.is-locked .attendance-student-button:hover { transform: none; }
+
+.backup-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; }
+
+.backup-row-skipped td { color: var(--danger); }
 
 .attendance-student-button {
 	border: 0;
