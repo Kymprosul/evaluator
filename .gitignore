@@ -3,6 +3,7 @@
 .env.*.local
 AGENTS.md
 arrancar-v1.bat
+run-local.bat
 publish-github.ps1
 ESP 2026 Spring.txt
 /.githooks/
