@@ -889,7 +889,6 @@ if (app) {
 
         if (attendanceStartButton) {
             attendanceStartButton.hidden = active;
-            attendanceStartButton.textContent = Attendance.hasData() ? "Editar lista" : "Pasar lista";
         }
         if (attendanceFinishButton) {
             attendanceFinishButton.hidden = !active;
