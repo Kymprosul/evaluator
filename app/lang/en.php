@@ -77,4 +77,13 @@ return [
     'vip_gap' => 'Slot',
     'no_vip' => 'There are no VIP students in this class.',
     'upload_backup' => 'Upload backup',
+    'edit' => 'Edit',
+    'done_editing' => 'Done editing',
+    'cancel' => 'Cancel',
+    'date' => 'Date',
+    'add_day' => 'Add day',
+    'confirm_delete_day' => 'The attendance of that day will be deleted. Continue?',
+    'present' => 'Present',
+    'absent' => 'Absent',
+    'unsaved_changes' => 'unsaved changes',
 ];

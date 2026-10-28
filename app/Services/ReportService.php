@@ -304,6 +304,92 @@ final class ReportService
         ];
     }
 
+    /**
+     * @param array<int|string, array<string, mixed>> $cells student_id => [date => 0|2]
+     */
+    public function saveAttendanceCells(int $classId, array $cells, int $userId, bool $isAdmin): int
+    {
+        $this->accessibleClassroom($classId, $userId, $isAdmin);
+
+        $studentIds = array_map(static fn(array $student): int => (int) $student['id'], $this->classes->studentsForClass($classId));
+        $pdo = Database::connection();
+        $find = $pdo->prepare(
+            'SELECT id FROM attendance_records WHERE class_id = :class_id AND student_id = :student_id AND attendance_date = :attendance_date'
+        );
+        $update = $pdo->prepare(
+            'UPDATE attendance_records SET attendance_score = :score, marked_by = :marked_by, marked_at = :marked_at WHERE id = :id'
+        );
+        $insert = $pdo->prepare(
+            'INSERT INTO attendance_records (class_id, student_id, attendance_date, attendance_score, marked_by, marked_at)
+             VALUES (:class_id, :student_id, :attendance_date, :score, :marked_by, :marked_at)'
+        );
+
+        $saved = 0;
+        Database::transaction(function () use ($cells, $classId, $studentIds, $userId, $find, $update, $insert, &$saved): void {
+            foreach ($cells as $studentId => $dates) {
+                if (!is_array($dates) || !in_array((int) $studentId, $studentIds, true)) {
+                    continue;
+                }
+
+                foreach ($dates as $date => $score) {
+                    $date = $this->validDate((string) $date);
+                    if (!in_array((string) $score, ['0', '2'], true)) {
+                        throw new RuntimeException('Valor de asistencia no válido.');
+                    }
+
+                    $now = date('Y-m-d H:i:s');
+                    $find->execute(['class_id' => $classId, 'student_id' => (int) $studentId, 'attendance_date' => $date]);
+                    $id = $find->fetchColumn();
+
+                    if ($id === false) {
+                        $insert->execute([
+                            'class_id' => $classId,
+                            'student_id' => (int) $studentId,
+                            'attendance_date' => $date,
+                            'score' => (int) $score,
+                            'marked_by' => $userId,
+                            'marked_at' => $now,
+                        ]);
+                    } else {
+                        $update->execute(['score' => (int) $score, 'marked_by' => $userId, 'marked_at' => $now, 'id' => (int) $id]);
+                    }
+                    $saved++;
+                }
+            }
+        });
+
+        return $saved;
+    }
+
+    public function addAttendanceDate(int $classId, string $date, int $userId, bool $isAdmin): void
+    {
+        $date = $this->validDate($date);
+        $this->accessibleClassroom($classId, $userId, $isAdmin);
+
+        $pdo = Database::connection();
+        $exists = $pdo->prepare('SELECT COUNT(*) FROM attendance_records WHERE class_id = :class_id AND attendance_date = :attendance_date');
+        $exists->execute(['class_id' => $classId, 'attendance_date' => $date]);
+        if ((int) $exists->fetchColumn() > 0) {
+            throw new RuntimeException('Ya existe una columna para esa fecha.');
+        }
+
+        $cells = [];
+        foreach ($this->classes->studentsForClass($classId) as $student) {
+            $cells[(int) $student['id']][$date] = '0';
+        }
+        $this->saveAttendanceCells($classId, $cells, $userId, $isAdmin);
+    }
+
+    public function deleteAttendanceDate(int $classId, string $date, int $userId, bool $isAdmin): void
+    {
+        $date = $this->validDate($date);
+        $this->accessibleClassroom($classId, $userId, $isAdmin);
+
+        Database::connection()
+            ->prepare('DELETE FROM attendance_records WHERE class_id = :class_id AND attendance_date = :attendance_date')
+            ->execute(['class_id' => $classId, 'attendance_date' => $date]);
+    }
+
     public function exportAttendanceCsv(int $classId, int $viewerUserId, bool $isAdmin): string
     {
         $matrix = $this->attendanceReportMatrix($classId, $viewerUserId, $isAdmin);
@@ -511,6 +597,16 @@ final class ReportService
         ]);
 
         return $statement->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    private function validDate(string $date): string
+    {
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+        if ($parsed === false || $parsed->format('Y-m-d') !== $date) {
+            throw new RuntimeException('Fecha no válida.');
+        }
+
+        return $date;
     }
 
     private function scoreLabel(?array $cell): string

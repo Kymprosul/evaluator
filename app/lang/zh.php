@@ -77,4 +77,13 @@ return [
     'vip_gap' => '空格',
     'no_vip' => '本班没有 VIP 学生。',
     'upload_backup' => '上传备份',
+    'edit' => '编辑',
+    'done_editing' => '完成编辑',
+    'cancel' => '取消',
+    'date' => '日期',
+    'add_day' => '添加日期',
+    'confirm_delete_day' => '将删除当天的考勤。是否继续？',
+    'present' => '出勤',
+    'absent' => '缺勤',
+    'unsaved_changes' => '项未保存的更改',
 ];

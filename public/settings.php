@@ -84,6 +84,20 @@ if (is_post()) {
             );
             $redirectClassId = $classId;
             flash('success', 'Alumno añadido a la clase.');
+        } elseif ($action === 'update_student') {
+            $classId = (int) post_value('class_id', 0);
+            $existing = $repository->find($classId, $currentUserId, $isAdmin);
+            if ($existing === null) {
+                throw new RuntimeException('Clase no válida.');
+            }
+            $repository->updateStudent(
+                $classId,
+                (int) post_value('student_id', 0),
+                (string) post_value('student_code', ''),
+                (string) post_value('display_name', '')
+            );
+            $redirectClassId = $classId;
+            flash('success', 'Alumno actualizado.');
         } elseif ($action === 'remove_student') {
             $classId = (int) post_value('class_id', 0);
             $existing = $repository->find($classId, $currentUserId, $isAdmin);
@@ -247,16 +261,23 @@ render_page_start(__('settings'));
                 <div class="student-list">
                     <?php foreach ($selectedStudents as $student): ?>
                         <div class="student-row">
-                            <div>
-                                <strong><?= e($student['display_name'] ?: $student['student_code']) ?></strong>
-                            </div>
-                            <form method="post">
+                            <form method="post" class="student-edit-form">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="action" value="update_student">
+                                <input type="hidden" name="class_id" value="<?= e((string) $selectedClass['id']) ?>">
+                                <input type="hidden" name="selected_class_id" value="<?= e((string) $selectedClass['id']) ?>">
+                                <input type="hidden" name="student_id" value="<?= e((string) $student['id']) ?>">
+                                <input type="text" name="display_name" value="<?= e((string) $student['display_name']) ?>" placeholder="Nombre" aria-label="Nombre">
+                                <input type="text" name="student_code" value="<?= e($student['student_code']) ?>" required aria-label="Código">
+                                <button type="submit" class="secondary-button"><?= e(__('save')) ?></button>
+                            </form>
+                            <form method="post" onsubmit="return confirm('¿Eliminar este alumno de la clase?');">
                                 <?= csrf_field() ?>
                                 <input type="hidden" name="action" value="remove_student">
                                 <input type="hidden" name="class_id" value="<?= e((string) $selectedClass['id']) ?>">
                                 <input type="hidden" name="selected_class_id" value="<?= e((string) $selectedClass['id']) ?>">
                                 <input type="hidden" name="student_id" value="<?= e((string) $student['id']) ?>">
-                                <button type="submit" class="danger-button">Eliminar alumno</button>
+                                <button type="submit" class="danger-button" title="<?= e(__('remove_student')) ?>" aria-label="<?= e(__('remove_student')) ?>">&times;</button>
                             </form>
                         </div>
                     <?php endforeach; ?>

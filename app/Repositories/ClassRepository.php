@@ -243,6 +243,40 @@ final class ClassRepository
         }
     }
 
+    public function updateStudent(int $classId, int $studentId, string $studentCode, string $displayName): void
+    {
+        $studentCode = trim($studentCode);
+        $displayName = trim($displayName);
+
+        if ($classId <= 0 || $studentId <= 0) {
+            throw new RuntimeException('Alumno o clase no válidos.');
+        }
+
+        if ($studentCode === '') {
+            throw new RuntimeException('El código del alumno es obligatorio.');
+        }
+
+        $pdo = Database::connection();
+        $link = $pdo->prepare('SELECT COUNT(*) FROM class_students WHERE class_id = :class_id AND student_id = :student_id');
+        $link->execute(['class_id' => $classId, 'student_id' => $studentId]);
+        if ((int) $link->fetchColumn() === 0) {
+            throw new RuntimeException('Alumno no válido.');
+        }
+
+        $duplicate = $pdo->prepare('SELECT COUNT(*) FROM students WHERE student_code = :student_code AND id <> :id');
+        $duplicate->execute(['student_code' => $studentCode, 'id' => $studentId]);
+        if ((int) $duplicate->fetchColumn() > 0) {
+            throw new RuntimeException('Ya existe un alumno con ese código.');
+        }
+
+        $pdo->prepare('UPDATE students SET student_code = :student_code, display_name = :display_name WHERE id = :id')
+            ->execute([
+                'student_code' => $studentCode,
+                'display_name' => $displayName === '' ? null : $displayName,
+                'id' => $studentId,
+            ]);
+    }
+
     public function removeStudentFromClass(int $classId, int $studentId): void
     {
         if ($classId <= 0 || $studentId <= 0) {

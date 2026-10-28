@@ -77,4 +77,13 @@ return [
     'vip_gap' => 'Hueco',
     'no_vip' => 'No hay alumnos VIP en esta clase.',
     'upload_backup' => 'Subir respaldo',
+    'edit' => 'Editar',
+    'done_editing' => 'Terminar edición',
+    'cancel' => 'Cancelar',
+    'date' => 'Fecha',
+    'add_day' => 'Añadir día',
+    'confirm_delete_day' => 'Se eliminará la asistencia de ese día. ¿Continuar?',
+    'present' => 'Presente',
+    'absent' => 'Ausente',
+    'unsaved_changes' => 'cambios sin guardar',
 ];
