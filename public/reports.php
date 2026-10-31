@@ -12,6 +12,9 @@ $currentUserId = (int) App\Auth::id();
 $isAdmin = App\Auth::isAdmin();
 $classes = $repository->allWithStats($currentUserId, $isAdmin);
 $selectedClassId = (int) (post_value('class_id') ?: get_value('class_id', $classes[0]['id'] ?? 0));
+if (!in_array($selectedClassId, array_map(static fn(array $classroom): int => (int) $classroom['id'], $classes), true)) {
+    $selectedClassId = (int) ($classes[0]['id'] ?? 0);
+}
 $selectedReportType = (string) (post_value('report_type') ?: get_value('report_type', 'exercises'));
 
 if (!in_array($selectedReportType, ['exercises', 'attendance', 'vip'], true)) {
@@ -43,29 +46,50 @@ if (is_post()) {
             flash('success', 'Nota actualizada manualmente.');
         } elseif ($selectedReportType === 'exercises' && $action === 'save_bulk') {
             $scores = post_value('scores', []);
+            $originals = post_value('orig', []);
 
-            if (!is_array($scores)) {
+            if (!is_array($scores) || !is_array($originals)) {
                 throw new RuntimeException('No se recibieron cambios para guardar.');
             }
 
-            foreach ($scores as $studentId => $cycleScores) {
-                if (!is_array($cycleScores)) {
-                    continue;
-                }
+            // Only cells the teacher actually changed are written, all or nothing.
+            $saved = 0;
+            $stale = 0;
+            App\Database::transaction(function () use ($scores, $originals, $reportService, $selectedClassId, $currentUserId, $isAdmin, &$saved, &$stale): void {
+                foreach ($scores as $studentId => $cycleScores) {
+                    if (!is_array($cycleScores)) {
+                        continue;
+                    }
 
-                foreach ($cycleScores as $cycleNumber => $score) {
-                    $reportService->upsertScoreByCycle(
-                        $selectedClassId,
-                        (int) $studentId,
-                        (int) $cycleNumber,
-                        (string) $score,
-                        $currentUserId,
-                        $isAdmin
-                    );
+                    foreach ($cycleScores as $cycleNumber => $score) {
+                        $before = is_array($originals[$studentId] ?? null) ? ($originals[$studentId][$cycleNumber] ?? null) : null;
+                        if (!is_string($before) || (string) $score === $before) {
+                            continue;
+                        }
+
+                        try {
+                            $reportService->upsertScoreByCycle(
+                                $selectedClassId,
+                                (int) $studentId,
+                                (int) $cycleNumber,
+                                (string) $score,
+                                $currentUserId,
+                                $isAdmin,
+                                $before
+                            );
+                            $saved++;
+                        } catch (RuntimeException $exception) {
+                            $stale++;
+                        }
+                    }
                 }
+            });
+
+            if ($stale > 0) {
+                flash('error', $stale . ' nota(s) no se guardaron porque cambiaron mientras editabas. Se guardaron ' . $saved . '; recarga el informe.');
+            } else {
+                flash('success', $saved > 0 ? 'Cambios guardados (' . $saved . ').' : 'No había cambios que guardar.');
             }
-
-            flash('success', 'Cambios guardados.');
         } elseif ($selectedReportType === 'exercises' && $action === 'save_cell') {
             $reportService->upsertScoreByCycle(
                 $selectedClassId,
@@ -314,11 +338,12 @@ render_page_start(__('reports'));
                                             class="compact-input"
                                             form="bulk-report-form"
                                         >
-                                            <option value="" <?= $cell === null ? 'selected' : '' ?>>NA</option>
+                                            <option value="" <?= ($cell['score'] ?? '') === '' ? 'selected' : '' ?>>NA</option>
                                             <?php foreach (['+', '=', '-'] as $scoreOption): ?>
                                                 <option value="<?= e($scoreOption) ?>" <?= ($cell['score'] ?? '') === $scoreOption ? 'selected' : '' ?>><?= e($scoreOption) ?></option>
                                             <?php endforeach; ?>
                                         </select>
+                                        <input type="hidden" name="orig[<?= e((string) $row['student_id']) ?>][<?= e((string) $cycleNumber) ?>]" value="<?= e((string) ($cell['score'] ?? '')) ?>" form="bulk-report-form">
                                     </td>
                                 <?php endforeach; ?>
                             </tr>

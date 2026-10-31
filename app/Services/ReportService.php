@@ -394,7 +394,7 @@ final class ReportService
         }
     }
 
-    public function upsertScoreByCycle(int $classId, int $studentId, int $cycleNumber, string $score, int $userId, bool $isAdmin): void
+    public function upsertScoreByCycle(int $classId, int $studentId, int $cycleNumber, string $score, int $userId, bool $isAdmin, ?string $expected = null): void
     {
         if ($classId <= 0 || $studentId <= 0 || $cycleNumber <= 0) {
             throw new RuntimeException('Datos de nota no válidos.');
@@ -406,24 +406,36 @@ final class ReportService
 
         $this->accessibleClassroom($classId, $userId, $isAdmin);
 
+        $studentIds = array_map(static fn(array $student): int => (int) $student['id'], $this->classes->studentsForClass($classId));
+        if (!in_array($studentId, $studentIds, true)) {
+            throw new RuntimeException('El alumno no pertenece a esta clase.');
+        }
+
         $cycle = $this->findCycle($classId, $cycleNumber);
         if ($cycle === null) {
             throw new RuntimeException('La columna seleccionada no existe.');
         }
 
         $statement = Database::connection()->prepare(
-            'SELECT id FROM evaluations WHERE class_id = :class_id AND student_id = :student_id AND cycle_id = :cycle_id LIMIT 1'
+            'SELECT id, score FROM evaluations WHERE class_id = :class_id AND student_id = :student_id AND cycle_id = :cycle_id LIMIT 1'
         );
         $statement->execute([
             'class_id' => $classId,
             'student_id' => $studentId,
             'cycle_id' => (int) $cycle['id'],
         ]);
-        $evaluationId = $statement->fetchColumn();
+        $existing = $statement->fetch(PDO::FETCH_ASSOC);
+        $evaluationId = $existing === false ? false : $existing['id'];
+
+        // The page may be stale: refuse to overwrite a value that changed since it was shown.
+        if ($expected !== null && (string) ($existing['score'] ?? '') !== $expected) {
+            throw new RuntimeException('La nota cambió mientras editabas; recarga el informe.');
+        }
 
         if ($score === '') {
+            // Only scored cells are cleared; a student drawn by the roulette and not yet scored stays.
             if ($evaluationId !== false) {
-                $delete = Database::connection()->prepare('DELETE FROM evaluations WHERE id = :id');
+                $delete = Database::connection()->prepare('DELETE FROM evaluations WHERE id = :id AND score IS NOT NULL');
                 $delete->execute(['id' => (int) $evaluationId]);
             }
             return;
